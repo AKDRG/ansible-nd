@@ -86,3 +86,33 @@ class VrfNameMixin(BaseModel):
     """Mixin for endpoints that require vrf_name parameter."""
 
     vrf_name: Optional[str] = Field(default=None, min_length=1, max_length=64, description="VRF name")
+
+
+class TicketIdMixin(BaseModel):
+    """Mixin for endpoints that require ticket_id parameter."""
+
+    ticket_id: Optional[str] = Field(default=None, min_length=1, max_length=64, description="Ticket ID")
+
+
+class SwitchIdMixin(BaseModel):
+    """Mixin for endpoints that require switch_id parameter (serial number or switch identifier)."""
+
+    switch_id: Optional[str] = Field(default=None, min_length=1, description="Switch ID (serial number)")
+
+
+class HostnameMixin(BaseModel):
+    """Mixin for endpoints that support hostname filtering."""
+
+    hostname: Optional[str] = Field(default=None, min_length=1, max_length=255, description="Switch hostname")
+
+
+class ForceMixin(BaseModel):
+    """Mixin for endpoints that support force parameter for deletion operations."""
+
+    force: bool = Field(default=False, description="Force deletion of resource(s)")
+
+
+class InterfaceNameMixin(BaseModel):
+    """Mixin for endpoints that require interface_name parameter."""
+
+    interface_name: Optional[str] = Field(default=None, min_length=1, description="Interface name (e.g., Ethernet1/1)")
