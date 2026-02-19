@@ -300,6 +300,83 @@ class EpManageFabricSwitchActionsRemove(FabricNameMixin, BaseModel):
         return HttpVerbEnum.POST
 
 
+class EpManageFabricSwitchActionsChangeRoles(FabricNameMixin, BaseModel):
+    """
+    # Summary
+
+    Change Switch Roles Endpoint (Bulk)
+
+    ## Description
+
+    Endpoint to change the role of multiple switches in a single request.
+
+    ## Path
+
+    - /api/v1/manage/fabrics/{fabricName}/switchActions/changeRoles
+
+    ## Verb
+
+    - POST
+
+    ## Usage
+
+    ```python
+    request = EpManageFabricSwitchActionsChangeRoles()
+    request.fabric_name = "MyFabric"
+
+    path = request.path
+    verb = request.verb
+    ```
+
+    ## Request Body Example
+
+    ```json
+    {
+        "switchRoles": [
+            {
+                "role": "leaf",
+                "switchId": "SAL1948TRTT"
+            },
+            {
+                "role": "spine",
+                "switchId": "SAL1947TRAB"
+            }
+        ]
+    }
+    ```
+    """
+
+    model_config = COMMON_CONFIG
+
+    class_name: Literal["EpManageFabricSwitchActionsChangeRoles"] = Field(
+        default="EpManageFabricSwitchActionsChangeRoles",
+        description="Class name for backward compatibility"
+    )
+    query_params: FabricSwitchesQueryParams = Field(
+        default_factory=FabricSwitchesQueryParams
+    )
+
+    @property
+    def path(self) -> str:
+        """Build the endpoint path."""
+        if self.fabric_name is None:
+            raise ValueError("fabric_name must be set before accessing path")
+
+        base_path = BasePath.manage_fabrics(
+            self.fabric_name, "switchActions", "changeRoles"
+        )
+
+        query_string = self.query_params.to_query_string()
+        if query_string:
+            return f"{base_path}?{query_string}"
+        return base_path
+
+    @property
+    def verb(self) -> HttpVerbEnum:
+        """Return the HTTP verb for this endpoint."""
+        return HttpVerbEnum.POST
+
+
 class EpManageFabricSwitchActionsImportBootstrap(FabricNameMixin, BaseModel):
     """
     # Summary

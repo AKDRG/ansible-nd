@@ -32,7 +32,7 @@ __metaclass__ = type
 import re
 from enum import Enum
 from ipaddress import ip_address, ip_network
-from pydantic import Field, field_validator, model_validator
+from pydantic import Field, ValidationInfo, field_validator, model_validator
 from typing import List, Dict, Any, Optional, ClassVar, Literal, Union
 from typing_extensions import Self
 
@@ -2365,14 +2365,16 @@ class SwitchConfigModel(NDBaseModel):
         min_length=1,
         description="Seed IP address or DNS name of the switch"
     )
-    user_name: str = Field(
-        ...,
+
+    # Optional fields — required for merged/overridden, optional for query/deleted
+    user_name: Optional[str] = Field(
+        default=None,
         alias="userName",
-        description="Login username to the switch"
+        description="Login username to the switch (required for merged/overridden states)"
     )
-    password: str = Field(
-        ...,
-        description="Login password to the switch"
+    password: Optional[str] = Field(
+        default=None,
+        description="Login password to the switch (required for merged/overridden states)"
     )
     
     # Optional fields with defaults
@@ -2388,9 +2390,9 @@ class SwitchConfigModel(NDBaseModel):
         le=7,
         description="Maximum hops to reach the switch (deprecated, defaults to 0)"
     )
-    role: SwitchRole = Field(
-        default=SwitchRole.LEAF,
-        description="Role to assign to the switch"
+    role: Optional[SwitchRole] = Field(
+        default=None,
+        description="Role to assign to the switch. None means not specified (uses controller default)."
     )
     preserve_config: bool = Field(
         default=False,
@@ -2425,6 +2427,11 @@ class SwitchConfigModel(NDBaseModel):
     def validate_poap_rma_credentials(self) -> Self:
         """Validate credentials for POAP and RMA operations."""
         if self.poap or self.rma:
+            # POAP/RMA require credentials
+            if not self.user_name or not self.password:
+                raise ValueError(
+                    "For POAP and RMA operations, user_name and password are required"
+                )
             # For POAP and RMA, username should be 'admin'
             if self.user_name != "admin":
                 raise ValueError("For POAP and RMA operations, user_name should be 'admin'")
@@ -2435,6 +2442,29 @@ class SwitchConfigModel(NDBaseModel):
         
         return self
     
+    @model_validator(mode='after')
+    def apply_state_defaults(self, info: ValidationInfo) -> Self:
+        """Apply state-aware defaults and enforcement using validation context.
+
+        When ``context={"state": "merged"}`` (or ``"overridden"``) is passed
+        to ``model_validate()``, the model:
+        - Defaults ``role`` to ``SwitchRole.LEAF`` when not specified.
+        - Enforces that ``user_name`` and ``password`` are provided.
+
+        For ``query`` / ``deleted`` (or no context), fields remain as-is.
+        """
+        state = (info.context or {}).get("state") if info else None
+        if state in ("merged", "overridden"):
+            if self.role is None:
+                self.role = SwitchRole.LEAF
+            if not self.user_name or not self.password:
+                raise ValueError(
+                    f"user_name and password are required "
+                    f"for '{state}' state "
+                    f"(switch: {self.seed_ip})"
+                )
+        return self
+
     @field_validator('seed_ip', mode='before')
     @classmethod
     def validate_seed_ip(cls, v: str) -> str:
@@ -2473,8 +2503,11 @@ class SwitchConfigModel(NDBaseModel):
 
     @field_validator('role', mode='before')
     @classmethod
-    def normalize_role(cls, v: Union[str, SwitchRole, None]) -> SwitchRole:
-        """Normalize role for case-insensitive and underscore-to-camelCase matching."""
+    def normalize_role(cls, v: Union[str, SwitchRole, None]) -> Optional[SwitchRole]:
+        """Normalize role for case-insensitive and underscore-to-camelCase matching.
+        Returns None when not specified (distinguishes from explicit 'leaf')."""
+        if v is None:
+            return None
         return SwitchRole.normalize(v)
 
     @field_validator('platform_type', mode='before')

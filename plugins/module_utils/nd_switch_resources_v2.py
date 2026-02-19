@@ -13,6 +13,7 @@ from copy import deepcopy
 from typing import Optional, List, Dict, Any, Union, Tuple
 
 from .nd_v2 import NDModule
+from .enums import OperationType
 from .results import Results
 from .schema.switch_inventory_models import (
     SwitchRole,
@@ -37,13 +38,13 @@ from .switch_utils import PayloadUtils, FabricUtils, SwitchWaitUtils, SwitchOper
 from .ep.ep_api_v1_manage_fabric_switches import (
     EpManageFabricSwitchesGet,
     EpManageFabricSwitchesAdd,
-    EpManageFabricSwitchDelete,
-    EpManageFabricSwitchUpdateRole,
 )
 from .ep.ep_api_v1_manage_fabric_discovery import EpManageFabricShallowDiscovery
 from .ep.ep_api_v1_manage_fabric_switch_actions import (
     EpManageFabricSwitchProvisionRMA,
     EpManageFabricSwitchActionsImportBootstrap,
+    EpManageFabricSwitchActionsRemove,
+    EpManageFabricSwitchActionsChangeRoles,
 )
 from .ep.ep_api_v1_manage_credentials import EpManageCredentialsSwitchesCreate
 
@@ -205,8 +206,11 @@ class NDSwitchResourceModule():
         for idx, cfg in enumerate(configs_list):
             self.log.debug(f"Validating config {idx + 1}/{len(configs_list)}: seed_ip={cfg.get('seed_ip')}")
             try:
-                # Validate with SwitchConfigModel
-                validated = SwitchConfigModel.model_validate(cfg)
+                # Validate with SwitchConfigModel — pass state via context
+                # so the model can apply state-aware defaults/enforcement
+                validated = SwitchConfigModel.model_validate(
+                    cfg, context={"state": self.state}
+                )
                 validated_configs.append(validated)
 
                 # Determine operation type for this config
@@ -285,46 +289,60 @@ class NDSwitchResourceModule():
         """
         self.log.info(f"Managing state: {self.state}")
 
-        if self.state != "query":
-            proposed_config, self.operation_type = self._validate_configs(self.config)
-            discovered_data = self._discover_switches(proposed_config)
-            try:
-                for switch_proposed_config in proposed_config:
-                    seed_ip = switch_proposed_config.seed_ip
-                    discovered_switch = discovered_data.get(seed_ip)
-                    discovered_switch["role"] = switch_proposed_config.role  # Add role from proposed config for comparison
-                    if discovered_switch:
-                        discovered_model = SwitchDataModel.from_response(discovered_switch)
-                        self.proposed.append(discovered_model)
+        # For query/deleted, config is optional — operate on all switches when absent
+        if self.state in ("query", "deleted"):
+            proposed_config = None
+            if self.config:
+                proposed_config, _ = self._validate_configs(self.config)
+
+            if self.state == "deleted":
+                return self._handle_deleted_state(proposed_config)
+            else:
+                return self._handle_query_state(proposed_config)
+
+        # merged / overridden — config is required
+        if not self.config:
+            self.nd.module.fail_json(
+                msg=f"'config' is required for '{self.state}' state."
+            )
+
+        proposed_config, self.operation_type = self._validate_configs(self.config)
+
+        discovered_data = self._discover_switches(proposed_config)
+        try:
+            for switch_proposed_config in proposed_config:
+                seed_ip = switch_proposed_config.seed_ip
+                discovered_switch = discovered_data.get(seed_ip)
+                if discovered_switch:
+                    # Add role from proposed config for comparison (if specified)
+                    if switch_proposed_config.role is not None:
+                        discovered_switch["role"] = switch_proposed_config.role
+                    discovered_model = SwitchDataModel.from_response(discovered_switch)
+                    self.proposed.append(discovered_model)
+                else:
+                    self.log.warning(f"No discovered data for switch with seed IP {seed_ip}")
+                    # Might be pre-provisioned, check in existing inventory by seed_ip
+                    existing_match = next(
+                        (sw for sw in self.existing if sw.fabric_management_ip == seed_ip), 
+                        None
+                    )
+                    if existing_match:
+                        self.proposed.append(existing_match)
+                        self.log.warning(f"Switch with seed IP {seed_ip} not discovered but found in existing inventory - adding to proposed for comparison")
                     else:
-                        self.log.warning(f"No discovered data for switch with seed IP {seed_ip}")
-                        # Might be pre-provisioned, check in existing inventory by seed_ip
-                        existing_match = next(
-                            (sw for sw in self.existing if sw.fabric_management_ip == seed_ip), 
-                            None
-                        )
-                        if existing_match:
-                            self.proposed.append(existing_match)
-                            self.log.warning(f"Switch with seed IP {seed_ip} not discovered but found in existing inventory - adding to proposed for comparison")
-                        else:
-                            msg = f"Switch with seed IP {seed_ip} not discovered and not found in existing inventory."
-                            self.log.error(msg)
-                            self.nd.module.fail_json(msg=msg)
-                    self.log.debug(f"Transformed discovered data to model for switch: {discovered_model}")
-            except Exception as e:
-                self.log.error(f"Failed to transform discovered data to model for switch: {discovered_switch}: {e}")
-            
-            diff = self._compute_changes(self.proposed, self.existing)
+                        msg = f"Switch with seed IP {seed_ip} not discovered and not found in existing inventory."
+                        self.log.error(msg)
+                        self.nd.module.fail_json(msg=msg)
+                self.log.debug(f"Transformed discovered data to model for switch: {seed_ip}")
+        except Exception as e:
+            self.log.error(f"Failed to transform discovered data to model: {e}")
+        
+        diff = self._compute_changes(self.proposed, self.existing)
 
-            if self.state == "merged":
-                return self._handle_merged_state(diff, proposed_config)
-            elif self.state == "deleted":
-                return self._handle_deleted_state(diff)
-            elif self.state == "overridden":
-                return self._handle_overridden_state(diff, proposed_config)
-
-        elif self.state == "query":
-            return self._handle_query_state()
+        if self.state == "merged":
+            return self._handle_merged_state(diff, proposed_config, discovered_data)
+        elif self.state == "overridden":
+            return self._handle_overridden_state(diff, proposed_config, discovered_data)
         else:
             self.nd.module.fail_json(msg=f"Unsupported state: {self.state}")
 
@@ -410,16 +428,88 @@ class NDSwitchResourceModule():
         
         return changes
 
-    def _handle_query_state(self) -> None:
-        """Handle query state - return existing switches."""
+    def _handle_query_state(
+        self,
+        proposed_config: Optional[List[SwitchConfigModel]] = None,
+    ) -> None:
+        """Handle query state - return existing switches.
+
+        Args:
+            proposed_config: Optional list of SwitchConfigModel from playbook.
+                If ``None``, all switches in the fabric are returned.
+                If provided, only switches matching ``seed_ip`` (and
+                optionally ``role``) are returned.
+
+        Registers a single QUERY task result containing the matching
+        switch inventory in ``response_current["DATA"]`` and an
+        empty diff (no changes for query).
+        """
         self.log.debug("ENTER: _handle_query_state()")
         self.log.info("Handling query state")
         self.log.debug(f"Found {len(self.existing)} existing switches")
-        
-        self.results.current = [sw.model_dump(by_alias=True) for sw in self.existing]
-        self.log.debug(f"Returning {len(self.results.current)} switches in results")
-        
-        self.results.register_final_result()
+
+        if proposed_config is None:
+            # No config provided — return all switches
+            matched_switches = list(self.existing)
+            self.log.info("No proposed config — returning all existing switches")
+        else:
+            # Filter existing switches by proposed seed_ip + optional role
+            matched_switches: List[SwitchDataModel] = []
+            for cfg in proposed_config:
+                match = next(
+                    (
+                        sw for sw in self.existing
+                        if sw.fabric_management_ip == cfg.seed_ip
+                    ),
+                    None,
+                )
+                if match is None:
+                    self.log.info(
+                        f"Switch {cfg.seed_ip} not found in fabric"
+                    )
+                    continue
+
+                # If the user specified a role, verify it matches
+                if cfg.role is not None and match.switch_role != cfg.role:
+                    self.log.info(
+                        f"Switch {cfg.seed_ip} found but role mismatch: "
+                        f"expected {cfg.role.value}, got "
+                        f"{match.switch_role.value if match.switch_role else 'None'}"
+                    )
+                    continue
+
+                matched_switches.append(match)
+
+            self.log.info(
+                f"Matched {len(matched_switches)}/{len(proposed_config)} "
+                f"switch(es) from proposed config"
+            )
+
+        switch_data = [
+            sw.model_dump(by_alias=True) for sw in matched_switches
+        ]
+
+        # Populate Results with proper metadata
+        self.results.action = "query"
+        self.results.state = self.state
+        self.results.check_mode = self.nd.module.check_mode
+        self.results.operation_type = OperationType.QUERY
+
+        self.results.response_current = {
+            "RETURN_CODE": 200,
+            "MESSAGE": "OK",
+            "DATA": switch_data,
+        }
+        self.results.result_current = {
+            "found": len(matched_switches) > 0,
+            "success": True,
+        }
+        self.results.diff_current = {}
+        self.results.register_task_result()
+
+        self.log.debug(
+            f"Returning {len(switch_data)} switches in results"
+        )
         self.log.debug("EXIT: _handle_query_state()")
 
     def _discover_switches(self, switch_configs: list[SwitchConfigModel]) -> Dict[str, Dict[str, Any]]:
@@ -454,210 +544,321 @@ class NDSwitchResourceModule():
         return all_discovered
 
     def _handle_merged_state(
-        self
+        self, diff, proposed_config, discovered_data=None
     ) -> None:
         """
-        Handle merged state - add or update switches.
-        Uses discovery-first approach with Pydantic model comparison.
+        Handle merged state - add new switches and process migration mode switches.
         
-        Comparison logic (similar to DCNM get_diff_merge):
-        1. Discover all proposed switches to get serial numbers
-        2. Transform discovered data to SwitchDataModel for comparison
-        3. Compare discovered vs existing using all fields:
-           - IP address, serial number, platform, version, hostname, role
-        4. If ALL match -> skip (idempotent)
-        5. If switch in "Migration" mode -> special handling
-        6. If any field differs -> add to diff_create
+        Workflow:
+        1. Log idempotent switches (no-op)
+        2. Warn about to_update (not supported in merged)
+        3. Bulk add new switches (to_add) to fabric
+        4. Collect migration mode switches
+        5. COMMON post-processing for ALL actionable switches:
+           - Wait for manageability
+           - Save credentials
+           - Assign role
+        6. Finalize (config-save + config-deploy)
         """
         self.log.debug("ENTER: _handle_merged_state()")
         self.log.info("Handling merged state")
         self.log.debug(f"Proposed configs: {len(self.proposed)}")
         self.log.debug(f"Existing switches: {len(self.existing)}")
-        
+
         if not self.proposed:
             self.log.info("No configurations provided for merged state")
             self.results.changed = False
             self.results.register_final_result()
             self.log.debug("EXIT: _handle_merged_state() - no configs")
-            return self.results
+            return
 
-        # Phase 2: Compare discovered vs existing using Pydantic models
-        self.log.debug("Phase 2: Comparing discovered vs existing switches")
-        diff_create = []
-        migration_mode_switches = []
-        
-        # Phase 4: Process Migration mode switches (special workflow)
-        if migration_mode_switches:
-            self.log.info(f"Processing {len(migration_mode_switches)} migration mode switches")
-            for mig_sw in migration_mode_switches:
-                # Assign role
-                self.log.info(
-                    f"Assigning role to migration switch: "
-                    f"{mig_sw['switch_config'].seed_ip} ({mig_sw['serial_number']})"
-                )
-                self._update_switch_role(
-                    mig_sw["switch_config"], 
-                    mig_sw["serial_number"]
-                )
-                
-                # Wait for switch to be manageable
-                self.log.debug(f"Waiting for switch {mig_sw['serial_number']} to be manageable")
-                SwitchWaitUtils.wait_for_switch_manageable(
-                    self.nd, self.fabric, mig_sw["serial_number"]
-                )
-            
-            # Config save and deploy for migration switches
-            if self.nd.module.params.get("save", True):
-                self.log.info("Saving configuration for migration switches")
-                self._config_save()
-            if self.nd.module.params.get("deploy", True):
-                self.log.info("Deploying configuration for migration switches")
-                self._config_deploy()
-        
-        # Phase 5: Process remaining switches (standard workflow)
-        non_migration_switches = [
-            sw for sw in diff_create 
-            if not any(m["switch_config"] == sw for m in migration_mode_switches)
-        ]
-        
-        if non_migration_switches:
-            self.log.debug(f"Phase 5: Processing {len(non_migration_switches)} non-migration switches")
-            try:
-                self._create_switch()
-                self.log.debug("Switch processing completed successfully")
-            except Exception as e:
-                self.log.error(f"Failed to process switches: {e}")
-                self.nd.module.fail_json(msg=f"Failed to process switches: {e}")
-        
-        # Set changed flag
+        # Build config lookup: seed_ip -> SwitchConfigModel (for credentials/role)
+        config_by_ip = {sw.seed_ip: sw for sw in proposed_config}
+
+        # Phase 1: Log idempotent switches
+        for sw in diff.get("idempotent", []):
+            self.log.info(
+                f"Switch {sw.fabric_management_ip} ({sw.switch_id}) "
+                f"is idempotent - no changes needed"
+            )
+
+        # Phase 2: Warn about to_update (merged state doesn't support updates)
+        if diff.get("to_update"):
+            ips = [sw.fabric_management_ip for sw in diff["to_update"]]
+            self.log.warning(
+                f"Switches require updates which is not supported in merged state. "
+                f"Use overridden state for updates. Affected switches: {ips}"
+            )
+
+        # Determine switches needing action
+        switches_to_add = diff.get("to_add", [])
+        migration_switches = diff.get("migration_mode", [])
+
+        if not switches_to_add and not migration_switches:
+            self.log.info("No switches need adding or migration processing")
+            self.results.changed = False
+            self.results.register_final_result()
+            return
+
+        # Check mode - preview only
+        if self.nd.module.check_mode:
+            self.log.info(
+                f"Check mode: would add {len(switches_to_add)} and "
+                f"process {len(migration_switches)} migration switches"
+            )
+            self.results.changed = True
+            self.results.register_final_result()
+            return
+
+        # POAP / RMA have their own workflows - delegate and return
+        if self.operation_type == "poap":
+            self._create_poap_switch()
+            self.results.changed = True
+            self.results.register_final_result()
+            return
+        elif self.operation_type == "rma":
+            self._create_rma_switch()
+            self.results.changed = True
+            self.results.register_final_result()
+            return
+
+        # ==================================================================
+        # Normal switch workflow
+        # ==================================================================
+        # switch_actions collects (serial_number, SwitchConfigModel) pairs
+        # for COMMON post-processing (wait, save creds, assign role).
+        switch_actions: List[Tuple[str, SwitchConfigModel]] = []
+
+        # Phase 3: Bulk add new switches to fabric
+        if switches_to_add and discovered_data:
+            add_configs = []
+            for sw in switches_to_add:
+                cfg = config_by_ip.get(sw.fabric_management_ip)
+                if cfg:
+                    add_configs.append(cfg)
+                else:
+                    self.log.warning(
+                        f"No config found for switch {sw.fabric_management_ip}, skipping add"
+                    )
+
+            if add_configs:
+                credential_groups = self._group_switches_by_credentials(add_configs)
+                for group_key, group_switches in credential_groups.items():
+                    username, password_hash, auth_proto, platform_type, preserve_config = group_key
+                    password = group_switches[0].password
+
+                    # Build (config, discovered_dict) pairs
+                    pairs = []
+                    for cfg in group_switches:
+                        disc = discovered_data.get(cfg.seed_ip)
+                        if disc:
+                            pairs.append((cfg, disc))
+                        else:
+                            self.log.warning(f"No discovery data for {cfg.seed_ip}, skipping")
+
+                    if not pairs:
+                        continue
+
+                    self._bulk_add_switches_to_fabric(
+                        switches=pairs,
+                        username=username,
+                        password=password,
+                        auth_proto=auth_proto,
+                        platform_type=platform_type,
+                        preserve_config=preserve_config,
+                    )
+
+                    # Collect serial numbers for post-processing
+                    for cfg, disc in pairs:
+                        sn = disc.get("serialNumber")
+                        if sn:
+                            switch_actions.append((sn, cfg))
+                            self._log_operation("add", cfg.seed_ip)
+
+        # Phase 4: Collect migration switches for post-processing
+        for mig_sw in migration_switches:
+            cfg = config_by_ip.get(mig_sw.fabric_management_ip)
+            if cfg and mig_sw.switch_id:
+                switch_actions.append((mig_sw.switch_id, cfg))
+                self._log_operation("migrate", mig_sw.fabric_management_ip)
+
+        if not switch_actions:
+            self.log.info("No switch actions to process after add/migration collection")
+            self.results.changed = False
+            self.results.register_final_result()
+            return
+
+        # ==================================================================
+        # COMMON post-processing for ALL switches (new + migration)
+        # ==================================================================
+        all_serial_numbers = [sn for sn, _ in switch_actions]
+
+        # Step 1: Wait for all switches to be manageable
+        self.log.info(
+            f"Waiting for {len(all_serial_numbers)} switch(es) to become manageable: "
+            f"{all_serial_numbers}"
+        )
+        success = self.wait_utils.wait_for_switch_manageable(all_serial_numbers)
+        if not success:
+            self.log.warning("Some switches did not become fully manageable")
+
+        # Step 2: Save credentials for all switches (bulk, grouped by creds)
+        self._bulk_save_credentials(switch_actions)
+
+        # Step 3: Assign roles for all switches (single bulk API call)
+        self._bulk_update_roles(switch_actions)
+
+        # Step 4: Finalize (config-save + config-deploy)
+        self._finalize_operations(all_serial_numbers)
+
         self.results.changed = True
-        
-        # Return results
         self.results.register_final_result()
-        self.log.debug(f"EXIT: _handle_merged_state() - completed with changed={self.results.changed}")
-        return self.results
+        self.log.debug(
+            f"EXIT: _handle_merged_state() - completed with changed={self.results.changed}"
+        )
     
-    def _handle_overridden_state(self) -> None:
+    def _handle_overridden_state(self, diff, proposed_config, discovered_data=None) -> None:
         """
-        Handle overridden state - replace all switches with desired config.
-        Override means: ensure only the switches in proposed config exist, delete all others.
-        """
-        self.log.info("Handling overridden state")
+        Handle overridden state - ensure only proposed switches exist in the fabric.
         
+        Workflow:
+        1. Delete switches not in proposed config (to_delete)
+        2. Delete switches that need updating (to_update), then re-add them
+        3. Delegate to _handle_merged_state for adds + migration processing
+        """
+        self.log.debug("ENTER: _handle_overridden_state()")
+        self.log.info("Handling overridden state")
+
         if not self.proposed:
             self.log.warning("No configurations provided for overridden state")
             self.results.changed = False
             self.results.register_final_result()
-            return self.results
-        
-        # Get identifiers from proposed configs
-        proposed_identifiers = set()
-        for switch_config in self.proposed:
-            proposed_identifiers.add(switch_config.seed_ip)
-        
-        # Delete switches not in proposed config
-        for existing_switch in self.existing:
-            # Get identifier from existing switch
-            identifier = None
-            if hasattr(existing_switch, 'fabric_management_ip'):
-                identifier = existing_switch.fabric_management_ip
-            elif hasattr(existing_switch, 'ip'):
-                identifier = existing_switch.ip
-            
-            if identifier and identifier not in proposed_identifiers:
-                self.log.info(f"Deleting switch (overridden): {identifier}")
-                self.current_identifier = identifier
-                try:
-                    self._delete_switch(existing_switch)
-                    self._log_operation("delete", identifier)
-                except Exception as e:
-                    self.log.error(f"Failed to delete switch {identifier}: {e}")
-        
-        # Now merge the proposed configurations (add/update switches)
-        # Reuse merged state logic
-        return self._handle_merged_state()
+            return
+
+        # Check mode - preview only
+        if self.nd.module.check_mode:
+            n_delete = len(diff.get("to_delete", []))
+            n_update = len(diff.get("to_update", []))
+            n_add = len(diff.get("to_add", []))
+            n_migrate = len(diff.get("migration_mode", []))
+            self.log.info(
+                f"Check mode: would delete {n_delete}, "
+                f"delete-and-re-add {n_update}, "
+                f"add {n_add}, migrate {n_migrate}"
+            )
+            self.results.changed = (n_delete + n_update + n_add + n_migrate) > 0
+            self.results.register_final_result()
+            return
+
+        # Collect all switches that need deletion
+        switches_to_delete: List[SwitchDataModel] = []
+
+        # Phase 1: Switches not in proposed config
+        for sw in diff.get("to_delete", []):
+            self.log.info(
+                f"Marking for deletion (not in proposed): "
+                f"{sw.fabric_management_ip} ({sw.switch_id})"
+            )
+            switches_to_delete.append(sw)
+            self._log_operation("delete", sw.fabric_management_ip)
+
+        # Phase 2: Switches that need updating (delete-then-re-add)
+        for sw in diff.get("to_update", []):
+            existing_sw = next(
+                (e for e in self.existing
+                 if e.switch_id == sw.switch_id
+                 or e.fabric_management_ip == sw.fabric_management_ip),
+                None,
+            )
+            if existing_sw:
+                self.log.info(
+                    f"Marking for deletion (re-add update): "
+                    f"{existing_sw.fabric_management_ip} ({existing_sw.switch_id})"
+                )
+                switches_to_delete.append(existing_sw)
+                self._log_operation("delete_for_update", existing_sw.fabric_management_ip)
+
+            # Move to to_add so merged state will re-add it
+            diff["to_add"].append(sw)
+
+        # Bulk delete all collected switches in one API call
+        if switches_to_delete:
+            self._bulk_delete_switches(switches_to_delete)
+
+        # Clear to_update — they've been moved to to_add
+        diff["to_update"] = []
+
+        # Phase 3: Delegate add + migration to merged state
+        self._handle_merged_state(diff, proposed_config, discovered_data)
+        self.log.debug("EXIT: _handle_overridden_state()")
     
-    def _handle_deleted_state(self) -> None:
+    def _handle_deleted_state(
+        self,
+        proposed_config: Optional[List[SwitchConfigModel]] = None,
+    ) -> None:
         """
         Handle deleted state - remove specified switches.
-        If no config provided, this is an error (don't delete all switches by default).
-        """
-        self.log.info("Handling deleted state")
         
-        if not self.proposed:
-            # Don't delete all switches by default - require explicit configuration
-            self.log.warning("No configurations provided for deleted state - nothing to delete")
+        Args:
+            proposed_config: Optional validated SwitchConfigModel list.
+                If ``None``, **all** switches in the fabric are deleted.
+                If provided, only switches matching ``seed_ip`` are deleted.
+                Discovery is skipped for deleted state — matching is done
+                against the existing inventory by ``seed_ip``.
+        """
+        self.log.debug("ENTER: _handle_deleted_state()")
+        self.log.info("Handling deleted state")
+
+        # Determine which switches to target
+        if proposed_config is None:
+            # No config — delete ALL switches in fabric
+            switches_to_delete = list(self.existing)
+            self.log.info(
+                f"No proposed config — targeting all {len(switches_to_delete)} "
+                f"existing switch(es) for deletion"
+            )
+            for sw in switches_to_delete:
+                self._log_operation("delete", sw.fabric_management_ip)
+        else:
+            # Match proposed seed_ips against existing inventory
+            switches_to_delete: List[SwitchDataModel] = []
+            for switch_config in proposed_config:
+                identifier = switch_config.seed_ip
+                existing_switch = next(
+                    (sw for sw in self.existing if sw.fabric_management_ip == identifier),
+                    None,
+                )
+                if existing_switch:
+                    self.log.info(f"Marking for deletion: {identifier} ({existing_switch.switch_id})")
+                    switches_to_delete.append(existing_switch)
+                    self._log_operation("delete", identifier)
+                else:
+                    self.log.info(f"Switch not found for deletion: {identifier}")
+
+        if not switches_to_delete:
+            self.log.info("No switches to delete")
             self.results.changed = False
             self.results.register_final_result()
             return
-        
-        # Delete specified switches
-        switches_deleted = False
-        for switch_config in self.proposed:
-            identifier = switch_config.seed_ip
-            self.current_identifier = identifier
-            
-            # Find switch by seed_ip in existing inventory
-            existing_switch = None
-            for switch in self.existing:
-                if hasattr(switch, 'fabric_management_ip') and switch.fabric_management_ip == identifier:
-                    existing_switch = switch
-                    break
-            
-            if existing_switch:
-                self.log.info(f"Deleting switch: {identifier}")
-                try:
-                    self._delete_switch(existing_switch)
-                    self._log_operation("delete", identifier)
-                    switches_deleted = True
-                except Exception as e:
-                    self.log.error(f"Failed to delete switch {identifier}: {e}")
-            else:
-                self.log.info(f"Switch not found for deletion: {identifier}")
-        
-        # Final save and deploy if any deletions occurred
-        if switches_deleted:
-            self._finalize_operations()
+
+        # Check mode - preview only
+        if self.nd.module.check_mode:
+            self.log.info(f"Check mode: would delete {len(switches_to_delete)} switch(es)")
             self.results.changed = True
-        else:
-            self.results.changed = False
-        
+            self.results.register_final_result()
+            return
+
+        # Bulk delete all collected switches in one API call
+        deleted_serial_numbers = self._bulk_delete_switches(switches_to_delete)
+        self._finalize_operations(deleted_serial_numbers)
+        self.results.changed = True
+
         self.results.register_final_result()
+        self.log.debug("EXIT: _handle_deleted_state()")
     
     # =========================================================================
     # Switch Operations
     # =========================================================================
-    
-    def _create_switch(self) -> Optional[Dict[str, Any]]:
-        """
-        Create (add) switch with full workflow.
-        
-        Supports different input types:
-        - SwitchConfigModel: For playbook config (validates and routes to normal/POAP/RMA)
-        - SwitchDiscoveryModel: For normal switch discovery/add
-        - Dict: Legacy support
-        """
-        self.log.debug("ENTER: _create_switch()")
-        self.log.debug(f"Operation type: {self.operation_type}")
-        
-        try:
-            self.log.info(f"Creating switch with operation type: {self.operation_type}")
-            
-            if self.operation_type == "normal":
-                result = self._create_normal_switch()
-            elif self.operation_type == "poap":
-                result = self._create_poap_switch()
-            elif self.operation_type == "rma":
-                result = self._create_rma_switch()
-            else:
-                raise SwitchOperationError(f"Unknown operation type: {self.operation_type}")
-            
-            self.log.debug(f"EXIT: _create_switch() -> success")
-            return result
-                
-        except Exception as e:
-            self.log.error(f"Switch creation failed: {e}")
-            raise SwitchOperationError(f"Create failed: {e}") from e
     
     def _determine_operation_type(self, switch: Union[SwitchConfigModel, SwitchDiscoveryModel, Dict[str, Any]]) -> str:
         """
@@ -685,60 +886,85 @@ class NDSwitchResourceModule():
         
         return 'normal'
     
-    def _delete_switch(self, switch: Union[SwitchDataModel, SwitchDiscoveryModel]) -> None:
+    def _bulk_delete_switches(
+        self,
+        switches: List[Union[SwitchDataModel, SwitchDiscoveryModel]],
+    ) -> List[str]:
         """
-        Delete (remove) switch from fabric.
+        Delete (remove) multiple switches from fabric in a single API call.
+
+        Uses the ``/switchActions/remove`` bulk endpoint instead of deleting
+        one switch at a time.
+
+        Args:
+            switches: List of switch models to delete.
+
+        Returns:
+            List of serial numbers that were successfully submitted for deletion.
         """
-        self.log.debug("ENTER: _delete_switch()")
-        
+        self.log.debug("ENTER: _bulk_delete_switches()")
+
         if self.nd.module.check_mode:
             self.log.debug("Check mode: Skipping actual deletion")
-            self.log.debug("EXIT: _delete_switch() - check mode")
-            return
-        
-        try:
-            # Get serial number - use switch_id for SwitchDataModel
-            serial_number = None
+            return []
+
+        # Collect serial numbers from switch models
+        serial_numbers: List[str] = []
+        for switch in switches:
+            sn = None
             if hasattr(switch, 'switch_id'):
-                serial_number = switch.switch_id
+                sn = switch.switch_id
             elif hasattr(switch, 'serial_number'):
-                serial_number = switch.serial_number
-            
-            if not serial_number:
-                self.log.warning(f"Cannot delete switch {self.current_identifier}: no serial number/switch_id")
-                self.log.debug("EXIT: _delete_switch() - no serial number")
-                return
-            
-            self.log.debug(f"Deleting switch with serial number: {serial_number}")
-            
-            # Remove switch from fabric using ep class
-            endpoint = EpManageFabricSwitchDelete()
-            endpoint.fabric_name = self.fabric
-            endpoint.switch_id = serial_number
-            
-            self.log.info(f"Removing switch {serial_number} from fabric {self.fabric}")
-            self.log.debug(f"Delete endpoint: {endpoint.path}")
-            
-            # Make the request
-            self.nd.request(path=endpoint.path, verb=endpoint.verb)
-            
-            # Get response and result from RestSend
+                sn = switch.serial_number
+
+            if sn:
+                serial_numbers.append(sn)
+            else:
+                ip = getattr(switch, 'fabric_management_ip', None) or getattr(switch, 'ip', None)
+                self.log.warning(f"Cannot delete switch {ip}: no serial number/switch_id")
+
+        if not serial_numbers:
+            self.log.warning("No valid serial numbers found for deletion")
+            self.log.debug("EXIT: _bulk_delete_switches() - nothing to delete")
+            return []
+
+        # Build bulk-remove endpoint
+        endpoint = EpManageFabricSwitchActionsRemove()
+        endpoint.fabric_name = self.fabric
+
+        payload = {"switchIds": serial_numbers}
+
+        self.log.info(
+            f"Bulk removing {len(serial_numbers)} switch(es) from fabric "
+            f"{self.fabric}: {serial_numbers}"
+        )
+        self.log.debug(f"Delete endpoint: {endpoint.path}")
+        self.log.debug(f"Delete payload: {payload}")
+
+        try:
+            self.nd.request(path=endpoint.path, verb=endpoint.verb, data=payload)
+
             response = self.nd.rest_send.response_current
             result = self.nd.rest_send.result_current
-            
+
             # Register the task result
             self.results.action = "delete"
             self.results.response_current = response
             self.results.result_current = result
-            self.results.diff_current = {"deleted": serial_number}
+            self.results.diff_current = {"deleted": serial_numbers}
             self.results.register_task_result()
-            
-            self.log.debug(f"Switch {serial_number} deleted successfully")
-            self.log.debug("EXIT: _delete_switch()")
-            
+
+            self.log.info(
+                f"Bulk delete submitted for {len(serial_numbers)} switch(es)"
+            )
+            self.log.debug("EXIT: _bulk_delete_switches()")
+            return serial_numbers
+
         except Exception as e:
-            self.log.error(f"Delete failed for {self.current_identifier}: {e}")
-            raise SwitchOperationError(f"Delete failed for {self.current_identifier}: {e}") from e
+            self.log.error(f"Bulk delete failed: {e}")
+            raise SwitchOperationError(
+                f"Bulk delete failed for {serial_numbers}: {e}"
+            ) from e
     
     # =========================================================================
     # Normal Switch Operations
@@ -770,12 +996,12 @@ class NDSwitchResourceModule():
         groups: Dict[Tuple, List[SwitchConfigModel]] = {}
         
         for switch in switches:
-            # Extract grouping fields
-            username = switch.user_name or 'admin'
-            password = switch.password or ''
-            auth_proto = switch.auth_proto or SnmpV3AuthProtocol.MD5
-            platform_type = switch.platform_type or PlatformType.NX_OS
-            preserve_config = switch.preserve_config if switch.preserve_config is not None else True
+            # Extract grouping fields — model provides all defaults
+            username = switch.user_name
+            password = switch.password
+            auth_proto = switch.auth_proto
+            platform_type = switch.platform_type
+            preserve_config = switch.preserve_config
             
             # Create grouping key (use hash of password for security)
             password_hash = hash(password)
@@ -819,7 +1045,8 @@ class NDSwitchResourceModule():
         self.log.debug("Step 3: Bulk adding switches to fabric")
         all_responses = []
         all_serial_numbers = []
-        
+
+        credential_groups = self._group_switches_by_credentials(configs)
         for group_key, switches in credential_groups.items():
             username, password_hash, auth_proto, platform_type, preserve_config = group_key
             password = switches[0].password
@@ -1026,83 +1253,6 @@ class NDSwitchResourceModule():
             self.log.error(f"Bulk discovery failed: {e}")
             raise
     
-    def _discover_switch(self, switch: Union[SwitchConfigModel, SwitchDiscoveryModel, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """
-        Discover a single switch using shallow discovery and return discovery response.
-        
-        NOTE: For bulk operations, use _bulk_discover_switches instead.
-        Uses ShallowDiscoveryRequestModel for the API payload.
-        """
-        # Build endpoint using ep class
-        endpoint = EpManageFabricShallowDiscovery()
-        endpoint.fabric_name = self.fabric
-        
-        # Extract fields from switch config
-        seed_ip = self._get_switch_field(switch, ['ip', 'seed_ip'])
-        username = self._get_switch_field(switch, ['username', 'user_name'])
-        password = self._get_switch_field(switch, ['password'])
-        auth_proto = self._get_switch_field(switch, ['snmp_v3_auth_protocol', 'snmpV3AuthProtocol', 'auth_proto'])
-        platform_type = self._get_switch_field(switch, ['platform_type', 'platformType'])
-        max_hops = self._get_switch_field(switch, ['max_hop', 'maxHop', 'max_hops']) or 0
-        
-        # Build shallow discovery request using schema model
-        discovery_request = ShallowDiscoveryRequestModel(
-            seedIpCollection=[seed_ip],
-            maxHop=max_hops,
-            platformType=platform_type or PlatformType.NX_OS,
-            snmpV3AuthProtocol=auth_proto or SnmpV3AuthProtocol.MD5,
-            username=username,
-            password=password
-        )
-        
-        payload = discovery_request.to_payload()
-        self.log.info(f"Discovering switch: {seed_ip}")
-        
-        try:
-            # Make the request
-            self.nd.request(path=endpoint.path, verb=endpoint.verb, data=payload)
-            
-            # Get response and result from RestSend
-            response = self.nd.rest_send.response_current
-            result = self.nd.rest_send.result_current
-            
-            # Register the task result
-            self.results.action = "discover"
-            self.results.response_current = response
-            self.results.result_current = result
-            self.results.diff_current = payload
-            self.results.register_task_result()
-            
-            # Wait for discovery to complete
-            discovered = self.wait_utils.wait_for_discovery(seed_ip)
-            
-            if discovered:
-                status = discovered.get("status", "").lower()
-                serial_number = discovered.get("serialNumber")
-                
-                # Validate discovery response
-                if not serial_number:
-                    self.log.error(f"Switch {seed_ip} discovery missing serial number")
-                    return None
-                
-                if status in ["manageable", "ok"]:
-                    self.discovered_switches[seed_ip] = discovered
-                    self.log.info(f"Switch {seed_ip} ({serial_number}) discovered successfully")
-                    return discovered
-                elif status == "alreadymanaged":
-                    self.log.info(f"Switch {seed_ip} ({serial_number}) is already managed")
-                    return discovered
-                else:
-                    reason = discovered.get("statusReason", "Unknown")
-                    self.log.error(f"Switch {seed_ip} status: {status}, reason: {reason}")
-                    return None
-            
-            return None
-            
-        except Exception as e:
-            self.log.error(f"Discovery failed for {seed_ip}: {e}")
-            raise
-    
     def _bulk_add_switches_to_fabric(
         self,
         switches: List[Tuple[SwitchConfigModel, Dict[str, Any]]],
@@ -1198,147 +1348,157 @@ class NDSwitchResourceModule():
         
         return response
     
-    def _add_switch_to_fabric(self, switch: Union[SwitchConfigModel, SwitchDiscoveryModel, Dict[str, Any]], discovered: Dict[str, Any]) -> Dict[str, Any]:
+    def _bulk_save_credentials(
+        self,
+        switch_actions: List[Tuple[str, SwitchConfigModel]],
+    ) -> None:
         """
-        Add a single discovered switch to fabric using AddSwitchesRequestModel.
-        
-        NOTE: For bulk operations, use _bulk_add_switches_to_fabric instead.
+        Save credentials for switches in bulk.
+
+        Groups switches by (username, password) and makes one API call
+        per credential group, sending all ``switchIds`` in a single
+        ``SwitchCredentialsRequestModel`` payload.
+
+        Args:
+            switch_actions: List of (serial_number, SwitchConfigModel) pairs.
         """
-        # Build endpoint using ep class
-        endpoint = EpManageFabricSwitchesAdd()
-        endpoint.fabric_name = self.fabric
-        
-        # Extract fields from switch config
-        switch_role = self._get_switch_field(switch, ['switch_role', 'switchRole', 'role'])
-        preserve_config = self._get_switch_field(switch, ['preserve_config', 'preserveConfig']) or False
-        platform_type = self._get_switch_field(switch, ['platform_type', 'platformType'])
-        auth_proto = self._get_switch_field(switch, ['snmp_v3_auth_protocol', 'snmpV3AuthProtocol', 'auth_proto'])
-        username = self._get_switch_field(switch, ['username', 'user_name'])
-        password = self._get_switch_field(switch, ['password'])
-        
-        # Create SwitchDiscoveryModel from discovered data
-        switch_discovery = SwitchDiscoveryModel(
-            hostname=discovered.get("hostname"),
-            ip=discovered.get("ip"),
-            serialNumber=discovered.get("serialNumber"),
-            model=discovered.get("model"),
-            softwareVersion=discovered.get("softwareVersion"),
-            switchRole=switch_role
-        )
-        
-        # Create AddSwitchesRequestModel
-        add_request = AddSwitchesRequestModel(
-            switches=[switch_discovery],
-            platformType=platform_type or PlatformType.NX_OS,
-            preserveConfig=preserve_config,
-            snmpV3AuthProtocol=auth_proto or SnmpV3AuthProtocol.MD5,
-            username=username,
-            password=password
-        )
-        
-        payload = add_request.to_payload()
-        self.log.info(f"Adding switch {discovered.get('serialNumber')} to fabric {self.fabric}")
-        
-        # Make the request
-        self.nd.request(path=endpoint.path, verb=endpoint.verb, data=payload)
-        
-        # Get response and result from RestSend
-        response = self.nd.rest_send.response_current
-        result = self.nd.rest_send.result_current
-        
-        # Register the task result
-        self.results.action = "create"
-        self.results.response_current = response
-        self.results.result_current = result
-        self.results.diff_current = payload
-        self.results.register_task_result()
-        
-        return response
-    
-    def _save_switch_credentials(self, switch: Union[SwitchConfigModel, SwitchDiscoveryModel, Dict[str, Any]], serial_number: str) -> None:
-        """
-        Save credentials for a switch.
-        """
-        self.log.debug(f"ENTER: _save_switch_credentials() for serial: {serial_number}")
-        
-        password = self._get_switch_field(switch, ['password'])
-        if not serial_number or not password:
-            self.log.debug(f"EXIT: _save_switch_credentials() - missing serial_number or password")
+        self.log.debug("ENTER: _bulk_save_credentials()")
+
+        # Group serial numbers by (username, password)
+        cred_groups: Dict[Tuple[str, str], List[str]] = {}
+        for sn, cfg in switch_actions:
+            if not cfg.user_name or not cfg.password:
+                self.log.debug(
+                    f"Skipping credentials for {sn}: missing user_name or password"
+                )
+                continue
+            key = (cfg.user_name, cfg.password)
+            cred_groups.setdefault(key, []).append(sn)
+
+        if not cred_groups:
+            self.log.debug(
+                "EXIT: _bulk_save_credentials() - no credentials to save"
+            )
             return
-        
-        # Build endpoint using ep class
+
         endpoint = EpManageCredentialsSwitchesCreate()
-        
-        username = self._get_switch_field(switch, ['username', 'user_name']) or "admin"
-        
-        # Build credentials payload using Pydantic model
-        # API expects switchUsername/switchPassword (not username/password)
-        creds_request = SwitchCredentialsRequestModel(
-            switchIds=[serial_number],
-            switchUsername=username,
-            switchPassword=password
-        )
-        payload = creds_request.to_payload()
-        
-        self.log.info(f"Saving credentials for switch {serial_number}")
-        self.log.debug(f"Credentials endpoint: {endpoint.path}")
-        self.log.debug(f"Credentials payload (password masked): {self._mask_password(payload)}")
-        
-        try:
-            # Make the request
-            self.nd.request(path=endpoint.path, verb=endpoint.verb, data=payload)
-            
-            # Get response and result from RestSend
-            response = self.nd.rest_send.response_current
-            result = self.nd.rest_send.result_current
-            
-            # Register the task result
-            self.results.action = "save_credentials"
-            self.results.response_current = response
-            self.results.result_current = result
-            self.results.diff_current = {"switchIds": [serial_number], "username": payload["switchUsername"]}
-            self.results.register_task_result()
-            self.log.debug(f"Credentials saved successfully for {serial_number}")
-            self.log.debug("EXIT: _save_switch_credentials()")
-        except Exception as e:
-            self.log.warning(f"Failed to save credentials for {serial_number}: {e}")
-    
-    def _update_switch_role(self, switch: Union[SwitchConfigModel, SwitchDiscoveryModel, Dict[str, Any]], serial_number: str) -> None:
+
+        for (username, password), serial_numbers in cred_groups.items():
+            creds_request = SwitchCredentialsRequestModel(
+                switchIds=serial_numbers,
+                switchUsername=username,
+                switchPassword=password,
+            )
+            payload = creds_request.to_payload()
+
+            self.log.info(
+                f"Saving credentials for {len(serial_numbers)} switch(es): "
+                f"{serial_numbers}"
+            )
+            self.log.debug(f"Credentials endpoint: {endpoint.path}")
+            self.log.debug(
+                f"Credentials payload (masked): "
+                f"{self._mask_password(payload)}"
+            )
+
+            try:
+                self.nd.request(
+                    path=endpoint.path,
+                    verb=endpoint.verb,
+                    data=payload,
+                )
+
+                response = self.nd.rest_send.response_current
+                result = self.nd.rest_send.result_current
+
+                self.results.action = "save_credentials"
+                self.results.response_current = response
+                self.results.result_current = result
+                self.results.diff_current = {
+                    "switchIds": serial_numbers,
+                    "username": username,
+                }
+                self.results.register_task_result()
+                self.log.info(
+                    f"Credentials saved for {len(serial_numbers)} switch(es)"
+                )
+            except Exception as e:
+                self.log.warning(
+                    f"Failed to save credentials for "
+                    f"{serial_numbers}: {e}"
+                )
+
+        self.log.debug("EXIT: _bulk_save_credentials()")
+
+    def _bulk_update_roles(
+        self,
+        switch_actions: List[Tuple[str, SwitchConfigModel]],
+    ) -> None:
         """
-        Update switch role.
+        Update switch roles in bulk using the ``changeRoles`` endpoint.
+
+        Sends a single API call with all ``switchRoles`` assignments:
+        ``{"switchRoles": [{"switchId": "SN", "role": "leaf"}, ...]}``
+
+        Args:
+            switch_actions: List of (serial_number, SwitchConfigModel) pairs.
         """
-        # Build endpoint using ep class
-        endpoint = EpManageFabricSwitchUpdateRole()
+        self.log.debug("ENTER: _bulk_update_roles()")
+
+        # Build the switchRoles array
+        switch_roles = []
+        for sn, cfg in switch_actions:
+            role = self._get_switch_field(cfg, ['role'])
+            if not role:
+                continue
+            role_value = (
+                role.value if isinstance(role, SwitchRole) else str(role)
+            )
+            switch_roles.append(
+                {"switchId": sn, "role": role_value}
+            )
+
+        if not switch_roles:
+            self.log.debug(
+                "EXIT: _bulk_update_roles() - no roles to update"
+            )
+            return
+
+        endpoint = EpManageFabricSwitchActionsChangeRoles()
         endpoint.fabric_name = self.fabric
-        endpoint.switch_id = serial_number
-        
-        switch_role = self._get_switch_field(switch, ['switch_role', 'switchRole', 'role'])
-        
-        # SwitchRole enum values are already in API format (camelCase)
-        role_value = switch_role.value if isinstance(switch_role, SwitchRole) else (switch_role or "leaf")
-        
-        payload = {
-            "role": role_value
-        }
-        
-        self.log.info(f"Updating role for switch {serial_number} to {role_value}")
-        
+
+        payload = {"switchRoles": switch_roles}
+
+        self.log.info(
+            f"Bulk updating roles for {len(switch_roles)} switch(es)"
+        )
+        self.log.debug(f"ChangeRoles endpoint: {endpoint.path}")
+        self.log.debug(f"ChangeRoles payload: {payload}")
+
         try:
-            # Make the request
-            self.nd.request(path=endpoint.path, verb=endpoint.verb, data=payload)
-            
-            # Get response and result from RestSend
+            self.nd.request(
+                path=endpoint.path,
+                verb=endpoint.verb,
+                data=payload,
+            )
+
             response = self.nd.rest_send.response_current
             result = self.nd.rest_send.result_current
-            
-            # Register the task result
+
             self.results.action = "update_role"
             self.results.response_current = response
             self.results.result_current = result
-            self.results.diff_current = {"switchId": serial_number, "role": role_value}
+            self.results.diff_current = payload
             self.results.register_task_result()
+            self.log.info(
+                f"Roles updated for {len(switch_roles)} switch(es)"
+            )
         except Exception as e:
-            self.log.warning(f"Failed to update role for {serial_number}: {e}")
+            self.log.warning(
+                f"Failed to bulk update roles: {e}"
+            )
+
+        self.log.debug("EXIT: _bulk_update_roles()")
     
     # =========================================================================
     # POAP Operations
@@ -1607,120 +1767,50 @@ class NDSwitchResourceModule():
     def _query_all_switches(self) -> List[Dict[str, Any]]:
         """
         Query all switches from fabric.
+
+        The ND API ``GET /fabrics/{fabricName}/switches`` returns the
+        switch list directly as response DATA.  ``nd.request()``
+        already unwraps ``response["DATA"]``, so the return value is
+        either a ``list`` of switch dicts or, in some ND versions, a
+        ``dict`` with a ``"switches"`` key.  Handle both.
+
+        Returns:
+            List of raw switch dicts from the controller.
+
+        Raises:
+            Exception: Propagated from ``nd.request()`` on API errors
+                       so that ``__init__`` fails visibly.
         """
-        try:
-            # Build endpoint using ep class
-            endpoint = EpManageFabricSwitchesGet()
-            endpoint.fabric_name = self.fabric
-            self.log.debug(f"Querying all switches with endpoint: {endpoint.path}")
-            self.log.debug(f"Query verb: {endpoint.verb}")
-            
-            result = self.nd.request(path=endpoint.path, verb=endpoint.verb)
-            # result = self.query_obj(endpoint.path)
-            switches = result.get("switches", []) if result else []
-            self.log.debug(f"Queried {len(switches)} switches from fabric {self.fabric}")
-            return switches
-        except Exception as e:
-            self.log.error(f"Query all failed: {e}")
-            return []
+        endpoint = EpManageFabricSwitchesGet()
+        endpoint.fabric_name = self.fabric
+        self.log.debug(f"Querying all switches with endpoint: {endpoint.path}")
+        self.log.debug(f"Query verb: {endpoint.verb}")
+
+        result = self.nd.request(path=endpoint.path, verb=endpoint.verb)
+
+        # Normalise: result is either a list or a dict with a
+        # "switches" key depending on ND version.
+        if isinstance(result, list):
+            switches = result
+        elif isinstance(result, dict):
+            switches = result.get("switches", [])
+        else:
+            switches = []
+
+        self.log.debug(
+            f"Queried {len(switches)} switches from fabric {self.fabric}"
+        )
+        return switches
     
     # =========================================================================
     # Helper Methods
     # =========================================================================
     
-    def _has_diff(self, existing_config: Dict[str, Any], proposed_config: Dict[str, Any]) -> bool:
-        """
-        Check if there's a difference between existing and proposed config.
-        
-        Args:
-            existing_config: Current switch configuration from inventory
-            proposed_config: Desired switch configuration from user
-            
-        Returns:
-            True if differences found, False otherwise
-        """
-        self.log.debug("ENTER: _has_diff()")
-        
-        # Deep copy to avoid modifying original configs
-        existing = deepcopy(existing_config)
-        proposed = deepcopy(proposed_config)
-        
-        # Remove password fields (never compare passwords)
-        for key in ["password", "discovery_password", "discoveryPassword"]:
-            existing.pop(key, None)
-            proposed.pop(key, None)
-        
-        # Remove read-only/computed fields that shouldn't trigger updates
-        read_only_fields = [
-            "switchId", "switch_id", "serialNumber", "serial_number",
-            "model", "softwareVersion", "software_version",
-            "status", "mode", "lastUpdated", "last_updated"
-        ]
-        for field in read_only_fields:
-            existing.pop(field, None)
-            proposed.pop(field, None)
-        
-        # Compare
-        has_diff = existing != proposed
-        
-        if has_diff:
-            self.log.debug(f"Configuration differences detected")
-            self.log.debug(f"Existing (filtered): {existing}")
-            self.log.debug(f"Proposed (filtered): {proposed}")
-            # Calculate specific differences
-            diff_keys = set(existing.keys()) | set(proposed.keys())
-            differences = {}
-            for key in diff_keys:
-                existing_val = existing.get(key)
-                proposed_val = proposed.get(key)
-                if existing_val != proposed_val:
-                    differences[key] = {"existing": existing_val, "proposed": proposed_val}
-            self.log.debug(f"Specific differences: {differences}")
-        else:
-            self.log.debug("No configuration differences detected")
-        
-        self.log.debug(f"EXIT: _has_diff() -> {has_diff}")
-        return has_diff
-    
-    def _remove_nested_key(self, data: Dict[str, Any], key_path: List[str]) -> None:
-        """
-        Remove a nested key from dictionary.
-        """
-        if not key_path or not isinstance(data, dict):
-            return
-        
-        if len(key_path) == 1:
-            data.pop(key_path[0], None)
-        else:
-            if key_path[0] in data:
-                self._remove_nested_key(data[key_path[0]], key_path[1:])
     
     def _mask_password(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
         Mask password fields in payload for logging.
         Returns a copy with passwords replaced by '***MASKED***'.
-        """
-        masked = deepcopy(payload)
-        password_fields = ['password', 'discoveryPassword', 'discovery_password']
-        
-        def mask_recursive(obj):
-            if isinstance(obj, dict):
-                for key, value in obj.items():
-                    if key in password_fields:
-                        obj[key] = '***MASKED***'
-                    elif isinstance(value, (dict, list)):
-                        mask_recursive(value)
-            elif isinstance(obj, list):
-                for item in obj:
-                    mask_recursive(item)
-        
-        mask_recursive(masked)
-        return masked
-    
-    def _mask_password(self, payload: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Mask password fields in payload for logging.
-        Returns a copy with passwords replaced by '***'.
         """
         masked = deepcopy(payload)
         password_fields = ['password', 'discoveryPassword', 'discovery_password']
@@ -1750,35 +1840,50 @@ class NDSwitchResourceModule():
         })
         self.results.changed = True
     
-    def _finalize_operations(self) -> None:
+    def _finalize_operations(self, serial_numbers: List[str] = None) -> None:
         """
         Finalize operations - save and deploy config.
+        
+        Args:
+            serial_numbers: Explicit list of switch serial numbers that were
+                            modified. Used for targeted config-deploy.
         """
         if self.nd.module.check_mode:
             return
-        
-        if self.nd_logs:  # Only if changes were made
-            if self.save_config_flag:
-                self.fabric_utils.save_config()
-            
-            if self.deploy_config_flag:
-                # Get all serial numbers that were modified
-                serial_numbers = []
-                for switch in self.existing:
-                    if hasattr(switch, 'switch_id') and switch.switch_id:
-                        serial_numbers.append(switch.switch_id)
-                
-                if serial_numbers:
-                    self.fabric_utils.deploy_config(serial_numbers)
+
+        if self.save_config_flag:
+            self.log.info("Saving fabric configuration")
+            self.fabric_utils.save_config()
+
+        if self.deploy_config_flag and serial_numbers:
+            self.log.info(f"Deploying configuration for {len(serial_numbers)} switch(es)")
+            self.fabric_utils.deploy_config(serial_numbers)
     
     def exit_json(self) -> None:
         """
-        Exit with results.
+        Build final result from all registered tasks and exit.
+
+        Merges the Results aggregation with supplemental data
+        (logs, previous/current inventory snapshots) and delegates
+        to ``ansible_module.exit_json`` / ``fail_json``.
         """
-        result = {
-            "logs": self.nd_logs,
-            "previous": [sw.model_dump(by_alias=True) for sw in self.previous] if self.previous else [],
-            "current": [sw.model_dump(by_alias=True) for sw in self.existing] if self.existing else []
-        }
-        
-        self.nd.module.exit_json(**result)
+        self.results.build_final_result()
+        final = self.results.final_result
+
+        # Attach supplemental data that is not part of the
+        # per-task Results flow.
+        final["logs"] = self.nd_logs
+        final["previous"] = (
+            [sw.model_dump(by_alias=True) for sw in self.previous]
+            if self.previous
+            else []
+        )
+        final["current"] = (
+            [sw.model_dump(by_alias=True) for sw in self.existing]
+            if self.existing
+            else []
+        )
+
+        if True in self.results.failed:
+            self.nd.module.fail_json(**final)
+        self.nd.module.exit_json(**final)
