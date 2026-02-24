@@ -15,7 +15,7 @@ from typing import Optional, List, Dict, Any, Union, Tuple
 from .nd_v2 import NDModule
 from .enums import OperationType
 from .results import Results
-from .schema.switch_inventory_models import (
+from .models.switch_inventory_models import (
     SwitchRole,
     SnmpV3AuthProtocol,
     PlatformType,
@@ -39,6 +39,7 @@ from .ep.ep_api_v1_manage_fabric_switches import (
     EpManageFabricSwitchesGet,
     EpManageFabricSwitchesAdd,
 )
+from .ep.ep_api_v1_manage_fabric_bootstrap import EpManageFabricBootstrapGet
 from .ep.ep_api_v1_manage_fabric_discovery import EpManageFabricShallowDiscovery
 from .ep.ep_api_v1_manage_fabric_switch_actions import (
     EpManageFabricSwitchProvisionRMA,
@@ -111,7 +112,7 @@ class NDSwitchResourceModule():
         self.save_config_flag = self.nd.module.params.get("save", True)
         self.deploy_config_flag = self.nd.module.params.get("deploy", True)
         self.results = results
-        self.operation
+
         # Initialize collections
         try:
             self.proposed: List[SwitchDataModel] = []
@@ -151,125 +152,82 @@ class NDSwitchResourceModule():
     def _validate_configs(self, config: Union[Dict[str, Any], List[Dict[str, Any]]]) -> List[SwitchConfigModel]:
         """
         Validate input ansible config and return validated SwitchConfigModel instances.
-        
+
+        Per-config validation (state restrictions, POAP/RMA mutual exclusivity,
+        credential enforcement, role defaults) is handled automatically by
+        ``SwitchConfigModel`` validators during ``model_validate()``.
+
+        Cross-config validation (mixed operation types) is handled by
+        ``SwitchConfigModel.validate_no_mixed_operations()``.
+
         Args:
             config: Raw configuration from ansible module params. Can be:
                     - Single dict with switch config
                     - List of dicts with multiple switch configs
-                    
+
         Returns:
-            List of validated SwitchConfigModel instances
-            
+            Tuple of (validated configs list, operation_type string)
+
         Raises:
             ValidationError: If config validation fails or mixed operation types detected
-            
-        Example config structure:
-            {
-                "fabric": "MyFabric",
-                "seed_ip": "10.1.1.1",
-                "user_name": "admin",
-                "password": "secret",
-                "auth_proto": "MD5",
-                "role": "leaf",
-                "preserve_config": true,
-                "poap": [
-                    {
-                        "serial_number": "SAL123456",
-                        "hostname": "leaf1",
-                        "model": "N9K-C93180YC-FX",
-                        "version": "9.3(10)",
-                        "image_policy": "NX-OS_9.3.10"
-                    }
-                ],
-                "rma": [
-                    {
-                        "old_serial": "SAL111111",
-                        "serial_number": "SAL222222",
-                        "model": "N9K-C93180YC-FX",
-                        "version": "9.3(10)",
-                        "image_policy": "NX-OS_9.3.10"
-                    }
-                ]
-            }
         """
         self.log.debug(f"ENTER: _validate_configs()")
-        self.log.debug(f"Input config type: {type(config).__name__}")
-        self.log.debug(f"Input config: {config}")
-        
-        validated_configs: List[SwitchConfigModel] = []
-        operation_types: set = set()
 
         # Normalize config to list
         configs_list = config if isinstance(config, list) else [config]
         self.log.debug(f"Normalized to {len(configs_list)} configuration(s)")
 
+        # Validate each config — model handles state checks,
+        # POAP/RMA exclusivity, credential enforcement, role defaults
+        validated_configs: List[SwitchConfigModel] = []
         for idx, cfg in enumerate(configs_list):
-            self.log.debug(f"Validating config {idx + 1}/{len(configs_list)}: seed_ip={cfg.get('seed_ip')}")
             try:
-                # Validate with SwitchConfigModel — pass state via context
-                # so the model can apply state-aware defaults/enforcement
                 validated = SwitchConfigModel.model_validate(
                     cfg, context={"state": self.state}
                 )
                 validated_configs.append(validated)
-
-                # Determine operation type for this config
-                if validated.poap and len(validated.poap) > 0:
-                    operation_types.add("poap")
-                elif validated.rma and len(validated.rma) > 0:
-                    operation_types.add("rma")
-                else:
-                    operation_types.add("normal")
-
             except Exception as e:
-                error_msg = f"Configuration validation failed for config index {idx}: {str(e)}"
+                error_msg = (
+                    f"Configuration validation failed for "
+                    f"config index {idx}: {str(e)}"
+                )
                 self.log.error(error_msg)
                 if hasattr(self.nd, 'module'):
                     self.nd.module.fail_json(msg=error_msg)
                 else:
                     raise ValueError(error_msg) from e
 
-        # Check for mixed operation types
-        if len(operation_types) > 1:
-            error_msg = (
-                f"Mixed operation types detected in configuration: {', '.join(sorted(operation_types))}. "
-                "POAP, RMA, and Normal switch operations cannot be mixed in the same task. "
-                "Please separate them into different tasks or playbook runs."
+        if not validated_configs:
+            self.log.warning("No valid configurations found in input")
+            return validated_configs, "unknown"
+
+        # Cross-config check — model can't do this per-instance
+        try:
+            SwitchConfigModel.validate_no_mixed_operations(
+                validated_configs
             )
+        except ValueError as e:
+            error_msg = str(e)
             self.log.error(error_msg)
             if hasattr(self.nd, 'module'):
                 self.nd.module.fail_json(msg=error_msg)
             else:
-                raise ValueError(error_msg)
-        else:
-            if "poap" in operation_types and (self.state != "merged" and self.state != "query"):
-                error_msg = (
-                    "POAP operations should use 'merged' state to ensure proper handling. "
-                    f"Current state: {self.state}"
-                )
-                self.log.error(error_msg)
-                if hasattr(self.nd, 'module'):
-                    self.nd.module.fail_json(msg=error_msg)
-            elif "rma" in operation_types and self.state != "merged":
-                error_msg = (
-                    "RMA operations should use 'merged' state to ensure proper handling. "
-                    f"Current state: {self.state}"
-                )
-                self.log.error(error_msg)
-                if hasattr(self.nd, 'module'):
-                    self.nd.module.fail_json(msg=error_msg)
+                raise
 
-        if not validated_configs:
-            self.log.warning("No valid configurations found in input")
-        else:
-            operation_type = list(operation_types)[0] if operation_types else "unknown"
-            self.log.info(
-                f"Successfully validated {len(validated_configs)} configuration(s) "
-                f"with operation type: {operation_type}"
-            )
-        
-        self.log.debug(f"EXIT: _validate_configs() -> {len(validated_configs)} configs, operation_type={list(operation_types)[0] if operation_types else 'unknown'}")
-        return validated_configs, operation_type
+        # Operation type is uniform (validated above)
+        operation_type = validated_configs[0].operation_type
+
+        self.log.info(
+            f"Successfully validated {len(validated_configs)} "
+            f"configuration(s) with operation type: "
+            f"{operation_type}"
+        )
+        self.log.debug(
+            f"EXIT: _validate_configs() -> "
+            f"{len(validated_configs)} configs, "
+            f"operation_type={operation_type}"
+        )
+        return validated_configs
     
     # =========================================================================
     # State Management
@@ -293,7 +251,7 @@ class NDSwitchResourceModule():
         if self.state in ("query", "deleted"):
             proposed_config = None
             if self.config:
-                proposed_config, _ = self._validate_configs(self.config)
+                proposed_config = self._validate_configs(self.config)
 
             if self.state == "deleted":
                 return self._handle_deleted_state(proposed_config)
@@ -306,7 +264,12 @@ class NDSwitchResourceModule():
                 msg=f"'config' is required for '{self.state}' state."
             )
 
-        proposed_config, self.operation_type = self._validate_configs(self.config)
+        proposed_config = self._validate_configs(self.config)
+        self.operation_type = proposed_config[0].operation_type
+
+        # POAP bypasses normal discovery — handle it separately and return
+        if self.operation_type == "poap":
+            return self._handle_poap_state(proposed_config)
 
         discovered_data = self._discover_switches(proposed_config)
         try:
@@ -363,17 +326,35 @@ class NDSwitchResourceModule():
                 "idempotent": [switches with no changes]
             }
         """
+        self.log.debug("ENTER: _compute_changes()")
+        self.log.debug(
+            f"Comparing {len(proposed)} proposed vs {len(existing)} existing switches"
+        )
+
         # Build index by switch_id for O(1) lookups
         existing_by_id = {sw.switch_id: sw for sw in existing}
         proposed_by_id = {sw.switch_id: sw for sw in proposed}
         
         # Also index by IP (for switches not yet discovered)
         existing_by_ip = {sw.fabric_management_ip: sw for sw in existing}
+
+        self.log.debug(
+            f"Indexes built — existing_by_id: {list(existing_by_id.keys())}, "
+            f"existing_by_ip: {list(existing_by_ip.keys())}"
+        )
         
-        # Fields to exclude from comparison
-        exclude_fields = {
-            "mode", "systemUpTime", "lastUpdated", 
-            "alertSuspend", "anomalyLevel", "advisoryLevel"
+        # Fields to INCLUDE in comparison — only user-controllable fields
+        # that are populated by both discovery and inventory APIs.
+        # Everything else (fabric metadata, uptime, alerts, additionalData,
+        # vpc info, telemetry, etc.) is server-managed and must be ignored.
+        compare_fields = {
+            "switch_id",
+            "serial_number",
+            "fabric_management_ip",
+            "hostname",
+            "model",
+            "software_version",
+            "switch_role",
         }
         
         changes = {
@@ -386,46 +367,91 @@ class NDSwitchResourceModule():
         
         # Process proposed switches
         for prop_sw in proposed:
+            ip = prop_sw.fabric_management_ip
+            sid = prop_sw.switch_id
+
             # Try to find match by switch_id first
-            existing_sw = existing_by_id.get(prop_sw.switch_id)
+            existing_sw = existing_by_id.get(sid)
+            match_key = "switch_id" if existing_sw else None
             
             # If not found by switch_id, try by IP
             if not existing_sw:
-                existing_sw = existing_by_ip.get(prop_sw.fabric_management_ip)
-            
-            if existing_sw:
-                # Check migration mode first
-                if existing_sw.mode == "Migration":
-                    changes["migration_mode"].append(prop_sw)
-                    continue
-                
-                # Compare models using dict comparison
-                prop_dict = prop_sw.model_dump(
-                    by_alias=True,
-                    exclude_none=True,
-                    exclude=exclude_fields
+                existing_sw = existing_by_ip.get(ip)
+                if existing_sw:
+                    match_key = "ip"
+
+            if not existing_sw:
+                self.log.info(
+                    f"Switch {ip} (id={sid}) not found in existing — marking to_add"
                 )
-                
-                existing_dict = existing_sw.model_dump(
-                    by_alias=True,
-                    exclude_none=True,
-                    exclude=exclude_fields
-                )
-                
-                if prop_dict == existing_dict:
-                    changes["idempotent"].append(prop_sw)
-                else:
-                    changes["to_update"].append(prop_sw)
-            else:
-                # Not in existing - needs to be added
                 changes["to_add"].append(prop_sw)
+                continue
+
+            self.log.debug(
+                f"Switch {ip} matched existing by {match_key} "
+                f"(existing_id={existing_sw.switch_id})"
+            )
+
+            # Check migration mode first
+            if existing_sw.mode == "Migration":
+                self.log.info(
+                    f"Switch {ip} ({existing_sw.switch_id}) is in Migration mode"
+                )
+                changes["migration_mode"].append(prop_sw)
+                continue
+            
+            # Compare models using only user-controllable fields
+            prop_dict = prop_sw.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                include=compare_fields
+            )
+            
+            existing_dict = existing_sw.model_dump(
+                by_alias=True,
+                exclude_none=True,
+                include=compare_fields
+            )
+            
+            if prop_dict == existing_dict:
+                self.log.debug(f"Switch {ip} is idempotent — no changes needed")
+                changes["idempotent"].append(prop_sw)
+            else:
+                # Log the specific differences
+                diff_keys = {
+                    k for k in set(prop_dict) | set(existing_dict)
+                    if prop_dict.get(k) != existing_dict.get(k)
+                }
+                self.log.info(
+                    f"Switch {ip} has differences — marking to_update. "
+                    f"Changed fields: {diff_keys}"
+                )
+                self.log.debug(
+                    f"Switch {ip} diff detail — "
+                    f"proposed: { {k: prop_dict.get(k) for k in diff_keys} }, "
+                    f"existing: { {k: existing_dict.get(k) for k in diff_keys} }"
+                )
+                changes["to_update"].append(prop_sw)
         
         # Find switches in existing but not in proposed (for overridden state)
         proposed_ids = {sw.switch_id for sw in proposed}
         for existing_sw in existing:
             if existing_sw.switch_id not in proposed_ids:
+                self.log.info(
+                    f"Existing switch {existing_sw.fabric_management_ip} "
+                    f"({existing_sw.switch_id}) not in proposed — marking to_delete"
+                )
                 changes["to_delete"].append(existing_sw)
-        
+
+        self.log.info(
+            f"Compute changes summary: "
+            f"to_add={len(changes['to_add'])}, "
+            f"to_update={len(changes['to_update'])}, "
+            f"to_delete={len(changes['to_delete'])}, "
+            f"migration_mode={len(changes['migration_mode'])}, "
+            f"idempotent={len(changes['idempotent'])}"
+        )
+        self.log.debug("EXIT: _compute_changes()")
         return changes
 
     def _handle_query_state(
@@ -610,13 +636,8 @@ class NDSwitchResourceModule():
             self.results.register_final_result()
             return
 
-        # POAP / RMA have their own workflows - delegate and return
-        if self.operation_type == "poap":
-            self._create_poap_switch()
-            self.results.changed = True
-            self.results.register_final_result()
-            return
-        elif self.operation_type == "rma":
+        # POAP is handled before discovery in manage_state() — only RMA here
+        if self.operation_type == "rma":
             self._create_rma_switch()
             self.results.changed = True
             self.results.register_final_result()
@@ -823,6 +844,9 @@ class NDSwitchResourceModule():
             # Match proposed seed_ips against existing inventory
             switches_to_delete: List[SwitchDataModel] = []
             for switch_config in proposed_config:
+                self.log.debug(
+                    f"Looking for switch to delete with seed IP: {switch_config.seed_ip}"
+                )
                 identifier = switch_config.seed_ip
                 existing_switch = next(
                     (sw for sw in self.existing if sw.fabric_management_ip == identifier),
@@ -831,10 +855,11 @@ class NDSwitchResourceModule():
                 if existing_switch:
                     self.log.info(f"Marking for deletion: {identifier} ({existing_switch.switch_id})")
                     switches_to_delete.append(existing_switch)
-                    self._log_operation("delete", identifier)
+                    # self._log_operation("delete", identifier)
                 else:
                     self.log.info(f"Switch not found for deletion: {identifier}")
 
+        self.log.info(f"Total switches marked for deletion: {len(switches_to_delete)}")
         if not switches_to_delete:
             self.log.info("No switches to delete")
             self.results.changed = False
@@ -848,12 +873,15 @@ class NDSwitchResourceModule():
             self.results.register_final_result()
             return
 
+        self.log.info(
+            f"Proceeding to delete {len(switches_to_delete)} switch(es) from fabric"
+        )
         # Bulk delete all collected switches in one API call
         deleted_serial_numbers = self._bulk_delete_switches(switches_to_delete)
-        self._finalize_operations(deleted_serial_numbers)
-        self.results.changed = True
+        # self._finalize_operations(deleted_serial_numbers)
+        # self.results.changed = True
 
-        self.results.register_final_result()
+        # self.results.register_final_result()
         self.log.debug("EXIT: _handle_deleted_state()")
     
     # =========================================================================
@@ -869,13 +897,9 @@ class NDSwitchResourceModule():
             'poap': Bootstrap/preprovision via POAP
             'rma': Return Material Authorization (switch replacement)
         """
-        # SwitchConfigModel has poap and rma fields
+        # SwitchConfigModel exposes operation_type as a computed field
         if isinstance(switch, SwitchConfigModel):
-            if switch.poap and len(switch.poap) > 0:
-                return 'poap'
-            if switch.rma and len(switch.rma) > 0:
-                return 'rma'
-            return 'normal'
+            return switch.operation_type
         
         # Legacy dict support
         if isinstance(switch, dict):
@@ -1503,137 +1527,272 @@ class NDSwitchResourceModule():
     # =========================================================================
     # POAP Operations
     # =========================================================================
-    
-    def _create_poap_switch(self) -> Dict[str, Any]:
+
+    def _handle_poap_state(
+        self, proposed_config: List[SwitchConfigModel]
+    ) -> None:
         """
-        Create POAP (bootstrap/preprovision) switches using POAPConfigModel.
-        Processes all switches in self.proposed that have POAP configurations.
+        Orchestrate the full POAP (bootstrap / pre-provision) workflow.
+
+        Flow:
+            1. Query the bootstrap API for switches in the POAP loop.
+            2. Index the bootstrap response by serial number.
+            3. For each user config, match it against the bootstrap data,
+               merge fields, and build a BootstrapImportSwitchModel.
+            4. POST the resulting list to importBootstrap.
+            5. Register results.
+
+        This method is called from ``manage_state()`` *before* normal
+        discovery so that POAP switches (which are not yet in the fabric
+        inventory) never hit ``_discover_switches()``.
         """
-        self.log.debug("ENTER: _create_poap_switch()")
-        self.log.info(f"Creating POAP switches for {len(self.proposed)} configuration(s)")
-        
-        all_responses = []
-        
-        # Process each switch configuration
-        for switch in self.proposed:
-            seed_ip = switch.seed_ip
-            self.log.info(f"Processing POAP switch: {seed_ip}")
-            self.log.debug(f"Switch config: {switch.model_dump(by_alias=True)}")
-            
-            responses = []
-            
-            # Handle different input formats
-            poap_configs: List[POAPConfigModel] = []
-            
-            if isinstance(switch, SwitchConfigModel):
-                # Use validated POAPConfigModel from SwitchConfigModel
-                if switch.poap:
-                    poap_configs = switch.poap
-            elif isinstance(switch, BootstrapImportSwitchModel):
-                # Legacy support - convert to dict for processing
-                poap_configs = [switch]  # type: ignore
-            elif isinstance(switch, dict):
-                # Legacy dict support - validate as POAPConfigModel
-                if 'poap' in switch:
-                    raw_configs = switch['poap'] if isinstance(switch['poap'], list) else [switch['poap']]
-                    for raw_config in raw_configs:
-                        try:
-                            poap_configs.append(POAPConfigModel.model_validate(raw_config))
-                        except Exception as e:
-                            self.log.error(f"Invalid POAP config: {e}")
-                            raise
-                elif 'bootstrap' in switch:
-                    raw_configs = switch['bootstrap'] if isinstance(switch['bootstrap'], list) else [switch['bootstrap']]
-                    for raw_config in raw_configs:
-                        try:
-                            poap_configs.append(POAPConfigModel.model_validate(raw_config))
-                        except Exception as e:
-                            self.log.error(f"Invalid bootstrap config: {e}")
-                            raise
-            
-            for poap_config in poap_configs:
-                response = self._poap_bootstrap(switch, poap_config)
-                responses.append(response)
-            
-            all_responses.extend(responses)
-        
-        self.log.debug(f"EXIT: _create_poap_switch() -> {len(all_responses)} responses")
-        return {"poap_responses": all_responses}
-    
-    def _poap_bootstrap(self, switch: Union[SwitchConfigModel, BootstrapImportSwitchModel, Dict[str, Any]], poap_config: Union[POAPConfigModel, BootstrapImportSwitchModel]) -> Dict[str, Any]:
+        self.log.debug("ENTER: _handle_poap_state()")
+        self.log.info(
+            f"Processing POAP for {len(proposed_config)} switch config(s)"
+        )
+
+        # Check mode — preview only
+        if self.nd.module.check_mode:
+            self.log.info("Check mode: would run POAP bootstrap import")
+            self.results.action = "bootstrap"
+            self.results.response_current = {"MESSAGE": "check mode — skipped"}
+            self.results.result_current = {"success": True, "changed": True}
+            self.results.diff_current = {
+                "poap_switches": [
+                    pc.seed_ip for pc in proposed_config
+                ]
+            }
+            self.results.register_task_result()
+            self.results.register_final_result()
+            return
+
+        # Step 1 — Query switches currently in the bootstrap loop
+        bootstrap_switches = self._query_bootstrap_switches()
+        bootstrap_index: Dict[str, Dict[str, Any]] = {
+            sw.get("serialNumber", sw.get("serial_number", "")): sw
+            for sw in bootstrap_switches
+        }
+        self.log.debug(
+            f"Bootstrap index contains {len(bootstrap_index)} switch(es): "
+            f"{list(bootstrap_index.keys())}"
+        )
+
+        # Step 2 — Build BootstrapImportSwitchModel list
+        import_models: List[BootstrapImportSwitchModel] = []
+
+        for switch_cfg in proposed_config:
+            if not switch_cfg.poap:
+                self.log.warning(
+                    f"Switch config for {switch_cfg.seed_ip} has no POAP "
+                    f"block — skipping"
+                )
+                continue
+
+            for poap_cfg in switch_cfg.poap:
+                serial = poap_cfg.serial_number
+                bootstrap_data = bootstrap_index.get(serial)
+
+                if not bootstrap_data:
+                    self.log.warning(
+                        f"Serial {serial} not found in bootstrap API "
+                        f"response — switch may not be in POAP loop yet. "
+                        f"Will attempt import anyway (pre-provision)."
+                    )
+
+                model = self._build_bootstrap_import_model(
+                    switch_cfg, poap_cfg, bootstrap_data
+                )
+                import_models.append(model)
+                self.log.info(
+                    f"Built bootstrap model for serial={serial}, "
+                    f"hostname={model.hostname}, ip={model.ip}"
+                )
+
+        if not import_models:
+            self.log.warning("No POAP switch models built — nothing to import")
+            self.results.action = "bootstrap"
+            self.results.response_current = {"MESSAGE": "no switches to bootstrap"}
+            self.results.result_current = {"success": True, "changed": False}
+            self.results.diff_current = {}
+            self.results.register_task_result()
+            self.results.register_final_result()
+            return
+
+        # Step 3 — POST importBootstrap
+        self._import_bootstrap_switches(import_models)
+
+        self.log.debug("EXIT: _handle_poap_state()")
+
+    # --------------------------------------------------------------------- #
+
+    def _query_bootstrap_switches(self) -> List[Dict[str, Any]]:
         """
-        Bootstrap a switch via POAP using POAPConfigModel and BootstrapImportSwitchModel.
+        GET ``/fabrics/{fabricName}/bootstrap`` and return the list of
+        switches currently in the bootstrap (POAP / PnP) loop.
+
+        Returns:
+            List of raw switch dicts from the bootstrap API.
         """
-        self.log.debug("ENTER: _poap_bootstrap()")
-        
-        # Build endpoint using ep class
+        self.log.debug("ENTER: _query_bootstrap_switches()")
+
+        endpoint = EpManageFabricBootstrapGet()
+        endpoint.fabric_name = self.fabric
+
+        self.log.debug(f"Bootstrap endpoint: {endpoint.path}")
+
+        result = self.nd.request(path=endpoint.path, verb=endpoint.verb)
+
+        # The response may be a dict with a "switches" key or a list.
+        if isinstance(result, dict):
+            switches = result.get("switches", [])
+        elif isinstance(result, list):
+            switches = result
+        else:
+            switches = []
+
+        self.log.info(
+            f"Bootstrap API returned {len(switches)} switch(es) in POAP loop"
+        )
+        self.log.debug("EXIT: _query_bootstrap_switches()")
+        return switches
+
+    # --------------------------------------------------------------------- #
+
+    def _build_bootstrap_import_model(
+        self,
+        switch_cfg: SwitchConfigModel,
+        poap_cfg: POAPConfigModel,
+        bootstrap_data: Optional[Dict[str, Any]],
+    ) -> BootstrapImportSwitchModel:
+        """
+        Merge user-supplied POAP config with bootstrap API data to create
+        a complete ``BootstrapImportSwitchModel``.
+
+        Priority:
+            * User config values always win.
+            * Bootstrap API provides ``publicKey``, ``fingerPrint``,
+              ``inInventory``, and ``dhcpBootstrapIp`` which the user
+              normally does not supply.
+
+        Args:
+            switch_cfg:     The parent SwitchConfigModel (carries seed_ip,
+                            role, password, auth_proto).
+            poap_cfg:       The POAPConfigModel from the user playbook.
+            bootstrap_data: The matching entry from the bootstrap GET API
+                            (may be ``None`` for pre-provision).
+        """
+        self.log.debug(
+            f"ENTER: _build_bootstrap_import_model(serial={poap_cfg.serial_number})"
+        )
+
+        bs = bootstrap_data or {}
+
+        # --- fields from user config ---
+        serial_number = poap_cfg.serial_number
+        hostname = poap_cfg.hostname
+        ip = switch_cfg.seed_ip
+        model = poap_cfg.model
+        software_version = poap_cfg.version
+        image_policy = poap_cfg.image_policy
+        gateway_ip_mask = (
+            poap_cfg.config_data.gateway if poap_cfg.config_data else None
+        )
+        switch_role = switch_cfg.role
+        password = switch_cfg.password
+        auth_proto = switch_cfg.auth_proto or SnmpV3AuthProtocol.MD5
+
+        discovery_username = getattr(poap_cfg, "discovery_username", None)
+        discovery_password = getattr(poap_cfg, "discovery_password", None)
+
+        # --- fields from bootstrap API response ---
+        public_key = bs.get("publicKey", "")
+        finger_print = bs.get("fingerPrint", "")
+        in_inventory = bs.get("inInventory", bool(serial_number))
+        dhcp_bootstrap_ip = bs.get("dhcpBootstrapIp")
+
+        # --- optional data block (modules_model / gateway) ---
+        data_block: Optional[Dict[str, Any]] = None
+        if poap_cfg.config_data:
+            data_block = {}
+            if gateway_ip_mask:
+                data_block["gatewayIpMask"] = gateway_ip_mask
+            if poap_cfg.config_data.modules_model:
+                data_block["modulesModel"] = poap_cfg.config_data.modules_model
+
+        bootstrap_model = BootstrapImportSwitchModel(
+            gatewayIpMask=gateway_ip_mask or "",
+            model=model,
+            softwareVersion=software_version,
+            imagePolicy=image_policy,
+            switchRole=switch_role,
+            password=password,
+            discoveryAuthProtocol=auth_proto,
+            useNewCredentials=bool(discovery_username),
+            discoveryUsername=discovery_username,
+            discoveryPassword=discovery_password,
+            hostname=hostname,
+            ip=ip,
+            serialNumber=serial_number,
+            inInventory=in_inventory,
+            publicKey=public_key,
+            fingerPrint=finger_print,
+            dhcpBootstrapIp=dhcp_bootstrap_ip,
+            data=data_block,
+        )
+
+        self.log.debug(
+            f"EXIT: _build_bootstrap_import_model() -> "
+            f"{bootstrap_model.serial_number}"
+        )
+        return bootstrap_model
+
+    # --------------------------------------------------------------------- #
+
+    def _import_bootstrap_switches(
+        self, models: List[BootstrapImportSwitchModel]
+    ) -> None:
+        """
+        POST the list of ``BootstrapImportSwitchModel`` to the
+        ``importBootstrap`` endpoint.
+
+        Registers results per-switch for proper Ansible output.
+        """
+        self.log.debug("ENTER: _import_bootstrap_switches()")
+
         endpoint = EpManageFabricSwitchActionsImportBootstrap()
         endpoint.fabric_name = self.fabric
-        
-        # Build BootstrapImportSwitchModel from POAPConfigModel or legacy config
-        if isinstance(poap_config, BootstrapImportSwitchModel):
-            bootstrap_model = poap_config
-        elif isinstance(poap_config, POAPConfigModel):
-            # Extract fields from validated POAPConfigModel
-            serial_number = poap_config.serial_number
-            hostname = poap_config.hostname
-            ip = self._get_switch_field(switch, ['ip', 'seed_ip'])
-            model = poap_config.model
-            software_version = poap_config.version
-            # Get gateway from config_data if present
-            gateway_ip_mask = poap_config.config_data.gateway if poap_config.config_data else None
-            image_policy = poap_config.image_policy
-            switch_role = self._get_switch_field(switch, ['switch_role', 'switchRole', 'role'])
-            password = self._get_switch_field(switch, ['password'])
-            auth_proto = self._get_switch_field(switch, ['snmp_v3_auth_protocol', 'snmpV3AuthProtocol', 'auth_proto'])
-            discovery_username = poap_config.discovery_username
-            discovery_password = poap_config.discovery_password
-            public_key = ''
-            finger_print = ''
-            # For bootstrap, serial_number present; for preprovision, preprovision_serial present
-            in_inventory = bool(serial_number)
-            
-            bootstrap_model = BootstrapImportSwitchModel(
-                gatewayIpMask=gateway_ip_mask,
-                model=model,
-                softwareVersion=software_version,
-                imagePolicy=image_policy,
-                switchRole=switch_role,
-                password=password,
-                discoveryAuthProtocol=auth_proto or SnmpV3AuthProtocol.MD5,
-                hostname=hostname,
-                ip=ip,
-                serialNumber=serial_number,
-                inInventory=in_inventory,
-                publicKey=public_key,
-                fingerPrint=finger_print
-            )
-        
-        # Create request model
-        request_model = ImportBootstrapSwitchesRequestModel(
-            switches=[bootstrap_model]
-        )
-        
-        self.log.debug(f"Bootstrap endpoint: {endpoint.path}")
-        self.log.debug(f"Bootstrap payload (password masked): {self._mask_password(payload)}")
+
+        request_model = ImportBootstrapSwitchesRequestModel(switches=models)
         payload = request_model.to_payload()
-        self.log.info(f"Bootstrapping switch {bootstrap_model.serial_number}")
-        
+
+        self.log.debug(f"importBootstrap endpoint: {endpoint.path}")
+        self.log.debug(
+            f"importBootstrap payload (masked): "
+            f"{self._mask_password(payload)}"
+        )
+        self.log.info(
+            f"Importing {len(models)} bootstrap switch(es): "
+            f"{[m.serial_number for m in models]}"
+        )
+
         # Make the request
         self.nd.request(path=endpoint.path, verb=endpoint.verb, data=payload)
-        
-        # Get response and result from RestSend
+
+        # Capture response
         response = self.nd.rest_send.response_current
         result = self.nd.rest_send.result_current
-        
-        # Register the task result
+
+        # Register task result
         self.results.action = "bootstrap"
         self.results.response_current = response
         self.results.result_current = result
         self.results.diff_current = payload
         self.results.register_task_result()
-        
-        return response
+
+        self.log.info(
+            f"importBootstrap API response success: {result.get('success')}"
+        )
+        self.log.debug("EXIT: _import_bootstrap_switches()")
     
     # =========================================================================
     # RMA Operations
