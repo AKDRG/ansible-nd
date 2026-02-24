@@ -32,7 +32,7 @@ __metaclass__ = type
 import re
 from enum import Enum
 from ipaddress import ip_address, ip_network
-from pydantic import Field, ValidationInfo, field_validator, model_validator
+from pydantic import Field, ValidationInfo, computed_field, field_validator, model_validator
 from typing import List, Dict, Any, Optional, ClassVar, Literal, Union
 from typing_extensions import Self
 
@@ -1507,26 +1507,76 @@ class BootstrapImportSwitchModel(NDBaseModel):
     """
     Import a bootstrap switch.
     
-    Based on: components/schemas/bootstrapImportSwitch (allOf bootstrapBase + bootstrapCredential + bootstrapImportSpecific)
+    Based on the actual importBootstrap API payload observed on NDFC.
     Path: POST /fabrics/{fabricName}/switchActions/importBootstrap
     """
     identifiers: ClassVar[List[str]] = ["serial_number"]
     identifier_strategy: ClassVar[Literal["single", "composite", "hierarchical"]] = "single"
     exclude_from_diff: ClassVar[List[str]] = ["password", "discovery_password"]
-    # From bootstrapBase
-    gateway_ip_mask: str = Field(
+
+    serial_number: str = Field(
         ...,
-        alias="gatewayIpMask",
-        description="Gateway IP address with mask"
+        alias="serialNumber",
+        description="Serial number of the bootstrap switch"
     )
     model: str = Field(
         ...,
         description="Model of the bootstrap switch"
     )
-    software_version: str = Field(
+    version: str = Field(
         ...,
-        alias="softwareVersion",
         description="Software version of the bootstrap switch"
+    )
+    hostname: str = Field(
+        ...,
+        description="Hostname of the bootstrap switch"
+    )
+    ip_address: str = Field(
+        ...,
+        alias="ipAddress",
+        description="IP address of the bootstrap switch"
+    )
+    password: str = Field(
+        ...,
+        description="Switch password to be set during bootstrap for admin user"
+    )
+    use_new_credentials: bool = Field(
+        default=False,
+        alias="useNewCredentials"
+    )
+    discovery_auth_protocol: SnmpV3AuthProtocol = Field(
+        ...,
+        alias="discoveryAuthProtocol"
+    )
+    discovery_username: Optional[str] = Field(
+        default=None,
+        alias="discoveryUsername"
+    )
+    discovery_password: Optional[str] = Field(
+        default=None,
+        alias="discoveryPassword"
+    )
+    data: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Bootstrap configuration data block (gatewayIpMask, models)"
+    )
+    fingerprint: str = Field(
+        default="",
+        description="SSH fingerprint from bootstrap GET API"
+    )
+    public_key: str = Field(
+        default="",
+        alias="publicKey",
+        description="SSH public key from bootstrap GET API"
+    )
+    re_add: bool = Field(
+        default=False,
+        alias="reAdd",
+        description="Re-add flag from bootstrap GET API"
+    )
+    in_inventory: bool = Field(
+        default=False,
+        alias="inInventory"
     )
     image_policy: Optional[str] = Field(
         default=None,
@@ -1537,80 +1587,29 @@ class BootstrapImportSwitchModel(NDBaseModel):
         default=None,
         alias="switchRole"
     )
-    
-    # From bootstrapCredential
-    password: str = Field(
-        ...,
-        description="Switch password to be set during bootstrap for admin user"
-    )
-    discovery_auth_protocol: SnmpV3AuthProtocol = Field(
-        ...,
-        alias="discoveryAuthProtocol"
-    )
-    use_new_credentials: bool = Field(
-        default=False,
-        alias="useNewCredentials"
-    )
-    discovery_username: Optional[str] = Field(
+    ip: Optional[str] = Field(
         default=None,
-        alias="discoveryUsername"
+        description="IP address (duplicate of ipAddress for API compatibility)"
     )
-    discovery_password: Optional[str] = Field(
+    software_version: Optional[str] = Field(
         default=None,
-        alias="discoveryPassword"
+        alias="softwareVersion",
+        description="Software version (duplicate of version for API compatibility)"
     )
-    remote_credential_store: RemoteCredentialStore = Field(
-        default=RemoteCredentialStore.LOCAL,
-        alias="remoteCredentialStore"
-    )
-    remote_credential_store_key: Optional[str] = Field(
+    gateway_ip_mask: Optional[str] = Field(
         default=None,
-        alias="remoteCredentialStoreKey"
+        alias="gatewayIpMask",
+        description="Gateway IP address with mask"
     )
-    
-    # From bootstrapImportSpecific
-    hostname: str = Field(
-        ...,
-        description="Hostname of the bootstrap switch"
-    )
-    ip: str = Field(
-        ...,
-        description="IP address of the bootstrap switch"
-    )
-    serial_number: str = Field(
-        ...,
-        alias="serialNumber",
-        description="Serial number of the bootstrap switch"
-    )
-    in_inventory: bool = Field(
-        ...,
-        alias="inInventory"
-    )
-    public_key: str = Field(
-        ...,
-        alias="publicKey"
-    )
-    finger_print: str = Field(
-        ...,
-        alias="fingerPrint"
-    )
-    dhcp_bootstrap_ip: Optional[str] = Field(
-        default=None,
-        alias="dhcpBootstrapIp"
-    )
-    seed_switch: bool = Field(
-        default=False,
-        alias="seedSwitch"
-    )
-    
-    @field_validator('gateway_ip_mask', mode='before')
+
+    @field_validator('ip_address', mode='before')
     @classmethod
-    def validate_gateway(cls, v: str) -> str:
-        result = SwitchValidators.validate_cidr(v)
+    def validate_ip_address(cls, v: str) -> str:
+        result = SwitchValidators.validate_ip_address(v)
         if result is None:
-            raise ValueError("gateway_ip_mask cannot be empty")
+            raise ValueError(f"Invalid IP address: {v}")
         return result
-    
+
     @field_validator('hostname', mode='before')
     @classmethod
     def validate_host(cls, v: str) -> str:
@@ -1618,17 +1617,7 @@ class BootstrapImportSwitchModel(NDBaseModel):
         if result is None:
             raise ValueError("hostname cannot be empty")
         return result
-    
-    @field_validator('ip', 'dhcp_bootstrap_ip', mode='before')
-    @classmethod
-    def validate_ip(cls, v: Optional[str]) -> Optional[str]:
-        if v is None:
-            return None
-        result = SwitchValidators.validate_ip_address(v)
-        if v is not None and result is None:
-            raise ValueError(f"Invalid IP address: {v}")
-        return result
-    
+
     @field_validator('serial_number', mode='before')
     @classmethod
     def validate_serial(cls, v: str) -> str:
@@ -1636,11 +1625,11 @@ class BootstrapImportSwitchModel(NDBaseModel):
         if result is None:
             raise ValueError("serial_number cannot be empty")
         return result
-    
+
     def to_payload(self) -> Dict[str, Any]:
-        """Convert to API payload format."""
+        """Convert to API payload format matching importBootstrap spec."""
         return self.model_dump(by_alias=True, exclude_none=True)
-    
+
     @classmethod
     def from_response(cls, response: Dict[str, Any]) -> Self:
         """Create model instance from API response."""
@@ -2109,8 +2098,10 @@ class ConfigDataModel(NDNestedModel):
     Configuration data for POAP/RMA operations.
     
     Used in Ansible playbook config for bootstrap config_data.
+    Contains only modulesModel. Gateway is specified at the POAP/RMA level,
+    NOT inside config_data.
     
-    Based on: dcnm_inventory.py config.poap.config_data and config.rma.config_data
+    Based on: dcnm_inventory.py config.poap.config_data
     """
     identifiers: ClassVar[List[str]] = []
     
@@ -2120,31 +2111,6 @@ class ConfigDataModel(NDNestedModel):
         min_length=1,
         description="List of model of modules in switch to Bootstrap/Pre-provision/RMA"
     )
-    gateway: str = Field(
-        ...,
-        description="Gateway IP with mask for the switch (e.g., 192.168.0.1/24)"
-    )
-    
-    # Optional additional config data fields
-    # Add other fields as needed based on NDFC/DCNM configuration guide
-    
-    @field_validator('gateway', mode='before')
-    @classmethod
-    def validate_gateway(cls, v: str) -> str:
-        """Validate gateway is a valid IP address with mask."""
-        if not v:
-            raise ValueError("gateway cannot be empty")
-        
-        # Check for CIDR notation
-        if '/' not in v:
-            raise ValueError("gateway must include subnet mask (e.g., 192.168.0.1/24)")
-        
-        try:
-            ip_network(v, strict=False)
-        except Exception as e:
-            raise ValueError(f"Invalid gateway IP address with mask: {v}") from e
-        
-        return v
 
 
 class POAPConfigModel(NDNestedModel):
@@ -2206,9 +2172,69 @@ class POAPConfigModel(NDNestedModel):
     config_data: Optional[ConfigDataModel] = Field(
         default=None,
         alias="configData",
-        description="Basic config data of switch to Bootstrap/Pre-provision"
+        description="Basic config data of switch to Bootstrap/Pre-provision (modulesModel only)"
+    )
+    gateway: Optional[str] = Field(
+        default=None,
+        description="Gateway IP with mask for the switch (e.g., 192.168.0.1/24)"
     )
     
+    @model_validator(mode='before')
+    @classmethod
+    def reject_gateway_in_config_data(cls, data: Any) -> Any:
+        """
+        Reject ``gateway`` if it appears inside ``config_data``.
+
+        The correct playbook format is::
+
+            poap:
+              - serial_number: ABC
+                config_data:
+                  modulesModel: [N9K-X9364v]
+                gateway: 192.168.0.1/24       # sibling of config_data ✓
+
+        NOT::
+
+            poap:
+              - serial_number: ABC
+                config_data:
+                  modulesModel: [N9K-X9364v]
+                  gateway: 192.168.0.1/24     # inside config_data ✗
+        """
+        if not isinstance(data, dict):
+            return data
+
+        # Check both snake_case and camelCase keys
+        cd = data.get("config_data") or data.get("configData")
+        if isinstance(cd, dict) and "gateway" in cd:
+            raise ValueError(
+                "'gateway' must be specified at the POAP level as a sibling "
+                "of 'config_data', not inside it. Move 'gateway' out of "
+                "'config_data'.\n"
+                "  Correct:\n"
+                "    config_data:\n"
+                "      modulesModel: [...]\n"
+                "    gateway: 192.168.0.1/24"
+            )
+
+        return data
+
+    @field_validator('gateway', mode='before')
+    @classmethod
+    def validate_gateway(cls, v: Optional[str]) -> Optional[str]:
+        """Validate gateway is a valid IP address with mask."""
+        if v is None:
+            return None
+        if not v:
+            raise ValueError("gateway cannot be empty")
+        if '/' not in v:
+            raise ValueError("gateway must include subnet mask (e.g., 192.168.0.1/24)")
+        try:
+            ip_network(v, strict=False)
+        except Exception as e:
+            raise ValueError(f"Invalid gateway IP address with mask: {v}") from e
+        return v
+
     @model_validator(mode='after')
     def validate_operation_type(self) -> Self:
         """Validate that either serial_number or preprovision_serial is provided."""
@@ -2357,7 +2383,16 @@ class SwitchConfigModel(NDBaseModel):
         ```
     """
     identifiers: ClassVar[List[str]] = ["seed_ip"]
-    
+
+    # Fields excluded from diff — only seed_ip + role are compared
+    exclude_from_diff: ClassVar[List[str]] = [
+        "user_name", "password", "auth_proto", "max_hops",
+        "preserve_config", "platform_type", "poap", "rma",
+        "operation_type",
+        "switch_id", "serial_number", "mode", "hostname",
+        "model", "software_version",
+    ]
+
     # Required fields
     seed_ip: str = Field(
         ...,
@@ -2414,7 +2449,54 @@ class SwitchConfigModel(NDBaseModel):
         default=None,
         description="RMA (Return Material Authorization) configurations for switch replacement"
     )
-    
+
+    # Computed fields
+
+    @computed_field
+    @property
+    def operation_type(self) -> Literal["normal", "poap", "rma"]:
+        """Determine the operation type from this config.
+
+        Returns:
+            ``'poap'`` if POAP configs are present,
+            ``'rma'`` if RMA configs are present,
+            ``'normal'`` otherwise.
+        """
+        if self.poap:
+            return "poap"
+        if self.rma:
+            return "rma"
+        return "normal"
+
+    # API-derived fields (populated by from_response, never set by users)
+    switch_id: Optional[str] = Field(
+        default=None,
+        alias="switchId",
+        description="Serial number / switch ID from inventory API"
+    )
+    serial_number: Optional[str] = Field(
+        default=None,
+        alias="serialNumber",
+        description="Serial number from inventory API"
+    )
+    mode: Optional[str] = Field(
+        default=None,
+        description="Switch mode from inventory API (Normal, Migration, etc.)"
+    )
+    hostname: Optional[str] = Field(
+        default=None,
+        description="Switch hostname from inventory API"
+    )
+    model: Optional[str] = Field(
+        default=None,
+        description="Switch model from inventory API"
+    )
+    software_version: Optional[str] = Field(
+        default=None,
+        alias="softwareVersion",
+        description="Software version from inventory API"
+    )
+
     @model_validator(mode='after')
     def validate_poap_rma_mutual_exclusion(self) -> Self:
         """Validate that POAP and RMA are mutually exclusive."""
@@ -2454,6 +2536,21 @@ class SwitchConfigModel(NDBaseModel):
         For ``query`` / ``deleted`` (or no context), fields remain as-is.
         """
         state = (info.context or {}).get("state") if info else None
+
+        # POAP only allowed with merged or query
+        if self.poap and state not in (None, "merged", "query"):
+            raise ValueError(
+                f"POAP operations require 'merged' or 'query' state, "
+                f"got '{state}' (switch: {self.seed_ip})"
+            )
+
+        # RMA only allowed with merged
+        if self.rma and state not in (None, "merged"):
+            raise ValueError(
+                f"RMA operations require 'merged' state, "
+                f"got '{state}' (switch: {self.seed_ip})"
+            )
+
         if state in ("merged", "overridden"):
             if self.role is None:
                 self.role = SwitchRole.LEAF
@@ -2516,14 +2613,76 @@ class SwitchConfigModel(NDBaseModel):
         """Normalize platform_type for case-insensitive matching (NX_OS, nx-os, etc.)."""
         return PlatformType.normalize(v)
 
+    @classmethod
+    def validate_no_mixed_operations(
+        cls, configs: List["SwitchConfigModel"]
+    ) -> None:
+        """Validate that a list of configs does not mix operation types.
+
+        POAP, RMA, and normal switch operations cannot be combined
+        in the same Ansible task.  Call this after validating all
+        individual configs.
+
+        Args:
+            configs: List of validated SwitchConfigModel instances.
+
+        Raises:
+            ValueError: If more than one operation type is present.
+        """
+        op_types = {cfg.operation_type for cfg in configs}
+        if len(op_types) > 1:
+            raise ValueError(
+                "Mixed operation types detected: "
+                f"{', '.join(sorted(op_types))}. "
+                "POAP, RMA, and normal switch operations "
+                "cannot be mixed in the same task. "
+                "Please separate them into different tasks."
+            )
+
     def to_payload(self) -> Dict[str, Any]:
-        """Convert to API payload format."""
-        return self.model_dump(by_alias=True, exclude_none=True)
+        """Convert to API payload format.
+
+        Excludes API-derived fields that are not part of the user config.
+        """
+        return self.model_dump(
+            by_alias=True,
+            exclude_none=True,
+            exclude={
+                "switch_id", "serial_number", "mode",
+                "hostname", "model", "software_version",
+            },
+        )
 
     @classmethod
     def from_response(cls, response: Dict[str, Any]) -> Self:
-        """Create model instance from API response."""
-        return cls.model_validate(response)
+        """Create model instance from inventory or discovery API response.
+
+        Handles two formats:
+        1. Inventory API: {switchId, fabricManagementIp, switchRole, ...}
+        2. Discovery API: {serialNumber, ip, hostname, ...}
+        """
+        mapped: Dict[str, Any] = {}
+
+        # seed_ip from fabricManagementIp (inventory) or ip (discovery)
+        ip = response.get("fabricManagementIp") or response.get("ip")
+        if ip:
+            mapped["seedIp"] = ip
+
+        # role from switchRole
+        role = response.get("switchRole")
+        if role:
+            mapped["role"] = role
+
+        # Direct API fields
+        direct_fields = (
+            "switchId", "serialNumber", "softwareVersion",
+            "mode", "hostname", "model",
+        )
+        for key in direct_fields:
+            if key in response and response[key] is not None:
+                mapped[key] = response[key]
+
+        return cls.model_validate(mapped)
 
 
 # =============================================================================

@@ -1593,11 +1593,14 @@ class NDSwitchResourceModule():
                 bootstrap_data = bootstrap_index.get(serial)
 
                 if not bootstrap_data:
-                    self.log.warning(
+                    msg = (
                         f"Serial {serial} not found in bootstrap API "
-                        f"response — switch may not be in POAP loop yet. "
-                        f"Will attempt import anyway (pre-provision)."
+                        f"response. The switch is not in the POAP loop. "
+                        f"Ensure the switch is powered on and POAP/DHCP "
+                        f"is enabled in the fabric."
                     )
+                    self.log.error(msg)
+                    self.nd.module.fail_json(msg=msg)
 
                 model = self._build_bootstrap_import_model(
                     switch_cfg, poap_cfg, bootstrap_data
@@ -1692,11 +1695,9 @@ class NDSwitchResourceModule():
         hostname = poap_cfg.hostname
         ip = switch_cfg.seed_ip
         model = poap_cfg.model
-        software_version = poap_cfg.version
+        version = poap_cfg.version
         image_policy = poap_cfg.image_policy
-        gateway_ip_mask = (
-            poap_cfg.config_data.gateway if poap_cfg.config_data else None
-        )
+        gateway_ip_mask = poap_cfg.gateway
         switch_role = switch_cfg.role
         password = switch_cfg.password
         auth_proto = switch_cfg.auth_proto or SnmpV3AuthProtocol.MD5
@@ -1705,39 +1706,43 @@ class NDSwitchResourceModule():
         discovery_password = getattr(poap_cfg, "discovery_password", None)
 
         # --- fields from bootstrap API response ---
+        # The GET bootstrap API returns "fingerPrint" (capital P),
+        # but the POST importBootstrap API expects "fingerprint" (lowercase).
+        fingerprint = bs.get("fingerPrint", bs.get("fingerprint", ""))
         public_key = bs.get("publicKey", "")
-        finger_print = bs.get("fingerPrint", "")
-        in_inventory = bs.get("inInventory", bool(serial_number))
-        dhcp_bootstrap_ip = bs.get("dhcpBootstrapIp")
+        re_add = bs.get("reAdd", False)
+        in_inventory = bs.get("inInventory", False)
 
-        # --- optional data block (modules_model / gateway) ---
+        # --- optional data block (models / gateway) ---
         data_block: Optional[Dict[str, Any]] = None
-        if poap_cfg.config_data:
+        if poap_cfg.config_data or gateway_ip_mask:
             data_block = {}
             if gateway_ip_mask:
                 data_block["gatewayIpMask"] = gateway_ip_mask
-            if poap_cfg.config_data.modules_model:
-                data_block["modulesModel"] = poap_cfg.config_data.modules_model
+            if poap_cfg.config_data and poap_cfg.config_data.modules_model:
+                data_block["models"] = poap_cfg.config_data.modules_model
 
         bootstrap_model = BootstrapImportSwitchModel(
-            gatewayIpMask=gateway_ip_mask or "",
+            serialNumber=serial_number,
             model=model,
-            softwareVersion=software_version,
-            imagePolicy=image_policy,
-            switchRole=switch_role,
+            version=version,
+            hostname=hostname,
+            ipAddress=ip,
             password=password,
-            discoveryAuthProtocol=auth_proto,
             useNewCredentials=bool(discovery_username),
+            discoveryAuthProtocol=auth_proto,
             discoveryUsername=discovery_username,
             discoveryPassword=discovery_password,
-            hostname=hostname,
-            ip=ip,
-            serialNumber=serial_number,
-            inInventory=in_inventory,
-            publicKey=public_key,
-            fingerPrint=finger_print,
-            dhcpBootstrapIp=dhcp_bootstrap_ip,
             data=data_block,
+            fingerprint=fingerprint,
+            publicKey=public_key,
+            reAdd=re_add,
+            inInventory=in_inventory,
+            imagePolicy=image_policy or "",
+            switchRole=switch_role,
+            ip=ip,
+            softwareVersion=version,
+            gatewayIpMask=gateway_ip_mask,
         )
 
         self.log.debug(
