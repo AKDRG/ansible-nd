@@ -26,6 +26,8 @@ from .models.switch_inventory_models import (
     ShallowDiscoveryRequestModel,
     BootstrapImportSwitchModel,
     ImportBootstrapSwitchesRequestModel,
+    PreProvisionSwitchModel,
+    PreProvisionSwitchesRequestModel,
     RMASwitchModel,
     ListAllSwitchesResponseModel,
     SwitchConfigModel,
@@ -44,6 +46,7 @@ from .ep.ep_api_v1_manage_fabric_discovery import EpManageFabricShallowDiscovery
 from .ep.ep_api_v1_manage_fabric_switch_actions import (
     EpManageFabricSwitchProvisionRMA,
     EpManageFabricSwitchActionsImportBootstrap,
+    EpManageFabricSwitchActionsPreProvision,
     EpManageFabricSwitchActionsRemove,
     EpManageFabricSwitchActionsChangeRoles,
 )
@@ -270,6 +273,10 @@ class NDSwitchResourceModule():
         # POAP bypasses normal discovery — handle it separately and return
         if self.operation_type == "poap":
             return self._handle_poap_state(proposed_config)
+
+        # RMA bypasses normal discovery — handle it separately and return
+        if self.operation_type == "rma":
+            return self._handle_rma_state(proposed_config)
 
         discovered_data = self._discover_switches(proposed_config)
         try:
@@ -636,12 +643,7 @@ class NDSwitchResourceModule():
             self.results.register_final_result()
             return
 
-        # POAP is handled before discovery in manage_state() — only RMA here
-        if self.operation_type == "rma":
-            self._create_rma_switch()
-            self.results.changed = True
-            self.results.register_final_result()
-            return
+        # POAP and RMA are handled before discovery in manage_state()
 
         # ==================================================================
         # Normal switch workflow
@@ -730,7 +732,7 @@ class NDSwitchResourceModule():
         self._bulk_update_roles(switch_actions)
 
         # Step 4: Finalize (config-save + config-deploy)
-        self._finalize_operations(all_serial_numbers)
+        self._finalize_operations()
 
         self.results.changed = True
         self.results.register_final_result()
@@ -1535,12 +1537,18 @@ class NDSwitchResourceModule():
         Orchestrate the full POAP (bootstrap / pre-provision) workflow.
 
         Flow:
-            1. Query the bootstrap API for switches in the POAP loop.
-            2. Index the bootstrap response by serial number.
-            3. For each user config, match it against the bootstrap data,
-               merge fields, and build a BootstrapImportSwitchModel.
-            4. POST the resulting list to importBootstrap.
-            5. Register results.
+            1. Separate POAP entries into bootstrap (serial_number) and
+               pre-provision (preprovision_serial) buckets.
+            2. For bootstrap entries:
+               a. Query the bootstrap API for switches in the POAP loop.
+               b. Match each entry against the bootstrap data.
+               c. Build BootstrapImportSwitchModel list.
+               d. POST to importBootstrap.
+            3. For pre-provision entries:
+               a. Build PreProvisionSwitchModel list (no bootstrap API
+                  query needed — the switch does not exist yet).
+               b. POST to preProvision.
+            4. Register results.
 
         This method is called from ``manage_state()`` *before* normal
         discovery so that POAP switches (which are not yet in the fabric
@@ -1553,8 +1561,8 @@ class NDSwitchResourceModule():
 
         # Check mode — preview only
         if self.nd.module.check_mode:
-            self.log.info("Check mode: would run POAP bootstrap import")
-            self.results.action = "bootstrap"
+            self.log.info("Check mode: would run POAP bootstrap / pre-provision")
+            self.results.action = "poap"
             self.results.response_current = {"MESSAGE": "check mode — skipped"}
             self.results.result_current = {"success": True, "changed": True}
             self.results.diff_current = {
@@ -1566,19 +1574,11 @@ class NDSwitchResourceModule():
             self.results.register_final_result()
             return
 
-        # Step 1 — Query switches currently in the bootstrap loop
-        bootstrap_switches = self._query_bootstrap_switches()
-        bootstrap_index: Dict[str, Dict[str, Any]] = {
-            sw.get("serialNumber", sw.get("serial_number", "")): sw
-            for sw in bootstrap_switches
-        }
-        self.log.debug(
-            f"Bootstrap index contains {len(bootstrap_index)} switch(es): "
-            f"{list(bootstrap_index.keys())}"
-        )
-
-        # Step 2 — Build BootstrapImportSwitchModel list
-        import_models: List[BootstrapImportSwitchModel] = []
+        # ------------------------------------------------------------- #
+        # Classify POAP entries into bootstrap vs pre-provision buckets
+        # ------------------------------------------------------------- #
+        bootstrap_entries: List[tuple] = []   # (SwitchConfigModel, POAPConfigModel)
+        preprov_entries: List[tuple] = []     # (SwitchConfigModel, POAPConfigModel)
 
         for switch_cfg in proposed_config:
             if not switch_cfg.poap:
@@ -1589,6 +1589,37 @@ class NDSwitchResourceModule():
                 continue
 
             for poap_cfg in switch_cfg.poap:
+                if poap_cfg.preprovision_serial:
+                    preprov_entries.append((switch_cfg, poap_cfg))
+                elif poap_cfg.serial_number:
+                    bootstrap_entries.append((switch_cfg, poap_cfg))
+                else:
+                    self.log.warning(
+                        f"POAP entry for {switch_cfg.seed_ip} has neither "
+                        f"serial_number nor preprovision_serial — skipping"
+                    )
+
+        self.log.info(
+            f"POAP classification: {len(bootstrap_entries)} bootstrap, "
+            f"{len(preprov_entries)} pre-provision"
+        )
+
+        # ------------------------------------------------------------- #
+        # Handle bootstrap entries (existing flow)
+        # ------------------------------------------------------------- #
+        if bootstrap_entries:
+            bootstrap_switches = self._query_bootstrap_switches()
+            bootstrap_index: Dict[str, Dict[str, Any]] = {
+                sw.get("serialNumber", sw.get("serial_number", "")): sw
+                for sw in bootstrap_switches
+            }
+            self.log.debug(
+                f"Bootstrap index contains {len(bootstrap_index)} switch(es): "
+                f"{list(bootstrap_index.keys())}"
+            )
+
+            import_models: List[BootstrapImportSwitchModel] = []
+            for switch_cfg, poap_cfg in bootstrap_entries:
                 serial = poap_cfg.serial_number
                 bootstrap_data = bootstrap_index.get(serial)
 
@@ -1611,18 +1642,39 @@ class NDSwitchResourceModule():
                     f"hostname={model.hostname}, ip={model.ip}"
                 )
 
-        if not import_models:
-            self.log.warning("No POAP switch models built — nothing to import")
-            self.results.action = "bootstrap"
-            self.results.response_current = {"MESSAGE": "no switches to bootstrap"}
+            if import_models:
+                self._import_bootstrap_switches(import_models)
+
+        # ------------------------------------------------------------- #
+        # Handle pre-provision entries
+        # ------------------------------------------------------------- #
+        if preprov_entries:
+            preprov_models: List[PreProvisionSwitchModel] = []
+            for switch_cfg, poap_cfg in preprov_entries:
+                pp_model = self._build_preprovision_model(
+                    switch_cfg, poap_cfg
+                )
+                preprov_models.append(pp_model)
+                self.log.info(
+                    f"Built pre-provision model for serial="
+                    f"{pp_model.serial_number}, hostname={pp_model.hostname}, "
+                    f"ip={pp_model.ip}"
+                )
+
+            if preprov_models:
+                self._preprovision_switches(preprov_models)
+
+        # ------------------------------------------------------------- #
+        # Edge case: nothing actionable
+        # ------------------------------------------------------------- #
+        if not bootstrap_entries and not preprov_entries:
+            self.log.warning("No POAP switch models built — nothing to process")
+            self.results.action = "poap"
+            self.results.response_current = {"MESSAGE": "no switches to process"}
             self.results.result_current = {"success": True, "changed": False}
             self.results.diff_current = {}
             self.results.register_task_result()
             self.results.register_final_result()
-            return
-
-        # Step 3 — POST importBootstrap
-        self._import_bootstrap_switches(import_models)
 
         self.log.debug("EXIT: _handle_poap_state()")
 
@@ -1700,7 +1752,8 @@ class NDSwitchResourceModule():
         gateway_ip_mask = poap_cfg.gateway
         switch_role = switch_cfg.role
         password = switch_cfg.password
-        auth_proto = switch_cfg.auth_proto or SnmpV3AuthProtocol.MD5
+        # POAP/bootstrap always uses MD5 regardless of user-supplied auth_proto
+        auth_proto = SnmpV3AuthProtocol.MD5
 
         discovery_username = getattr(poap_cfg, "discovery_username", None)
         discovery_password = getattr(poap_cfg, "discovery_password", None)
@@ -1729,7 +1782,6 @@ class NDSwitchResourceModule():
             hostname=hostname,
             ipAddress=ip,
             password=password,
-            useNewCredentials=bool(discovery_username),
             discoveryAuthProtocol=auth_proto,
             discoveryUsername=discovery_username,
             discoveryPassword=discovery_password,
@@ -1798,131 +1850,394 @@ class NDSwitchResourceModule():
             f"importBootstrap API response success: {result.get('success')}"
         )
         self.log.debug("EXIT: _import_bootstrap_switches()")
-    
+
+    # --------------------------------------------------------------------- #
+    # Pre-Provision helpers
+    # --------------------------------------------------------------------- #
+
+    def _build_preprovision_model(
+        self,
+        switch_cfg: SwitchConfigModel,
+        poap_cfg: POAPConfigModel,
+    ) -> PreProvisionSwitchModel:
+        """
+        Build a ``PreProvisionSwitchModel`` from the user-supplied POAP
+        config.  Pre-provision does **not** require a bootstrap API query
+        because the switch does not physically exist yet.
+
+        Args:
+            switch_cfg: The parent SwitchConfigModel (carries seed_ip,
+                        role, password, auth_proto).
+            poap_cfg:   The POAPConfigModel from the user playbook.
+        """
+        self.log.debug(
+            f"ENTER: _build_preprovision_model("
+            f"serial={poap_cfg.preprovision_serial})"
+        )
+
+        serial_number = poap_cfg.preprovision_serial
+        hostname = poap_cfg.hostname
+        ip = switch_cfg.seed_ip
+        model_name = poap_cfg.model
+        version = poap_cfg.version
+        image_policy = poap_cfg.image_policy
+        gateway_ip_mask = poap_cfg.gateway
+        switch_role = switch_cfg.role
+        password = switch_cfg.password
+        # POAP/preprovision always uses MD5 regardless of user-supplied auth_proto
+        auth_proto = SnmpV3AuthProtocol.MD5
+
+        discovery_username = getattr(poap_cfg, "discovery_username", None)
+        discovery_password = getattr(poap_cfg, "discovery_password", None)
+
+        # --- optional data block (models / gateway) ---
+        data_block: Optional[Dict[str, Any]] = None
+        if poap_cfg.config_data or gateway_ip_mask:
+            data_block = {}
+            if gateway_ip_mask:
+                data_block["gatewayIpMask"] = gateway_ip_mask
+            if poap_cfg.config_data and poap_cfg.config_data.modules_model:
+                data_block["models"] = poap_cfg.config_data.modules_model
+
+        preprov_model = PreProvisionSwitchModel(
+            serialNumber=serial_number,
+            hostname=hostname,
+            ip=ip,
+            model=model_name,
+            softwareVersion=version,
+            gatewayIpMask=gateway_ip_mask,
+            password=password,
+            discoveryAuthProtocol=auth_proto,
+            discoveryUsername=discovery_username,
+            discoveryPassword=discovery_password,
+            data=data_block,
+            imagePolicy=image_policy or None,
+            switchRole=switch_role,
+        )
+
+        self.log.debug(
+            f"EXIT: _build_preprovision_model() -> "
+            f"{preprov_model.serial_number}"
+        )
+        return preprov_model
+
+    # --------------------------------------------------------------------- #
+
+    def _preprovision_switches(
+        self, models: List[PreProvisionSwitchModel]
+    ) -> None:
+        """
+        POST the list of ``PreProvisionSwitchModel`` to the
+        ``preProvision`` endpoint.
+
+        Registers results per-call for proper Ansible output.
+        """
+        self.log.debug("ENTER: _preprovision_switches()")
+
+        endpoint = EpManageFabricSwitchActionsPreProvision()
+        endpoint.fabric_name = self.fabric
+
+        request_model = PreProvisionSwitchesRequestModel(switches=models)
+        payload = request_model.to_payload()
+
+        self.log.debug(f"preProvision endpoint: {endpoint.path}")
+        self.log.debug(
+            f"preProvision payload (masked): "
+            f"{self._mask_password(payload)}"
+        )
+        self.log.info(
+            f"Pre-provisioning {len(models)} switch(es): "
+            f"{[m.serial_number for m in models]}"
+        )
+
+        # Make the request
+        self.nd.request(path=endpoint.path, verb=endpoint.verb, data=payload)
+
+        # Capture response
+        response = self.nd.rest_send.response_current
+        result = self.nd.rest_send.result_current
+
+        # Register task result
+        self.results.action = "preprovision"
+        self.results.response_current = response
+        self.results.result_current = result
+        self.results.diff_current = payload
+        self.results.register_task_result()
+
+        self.log.info(
+            f"preProvision API response success: {result.get('success')}"
+        )
+        self.log.debug("EXIT: _preprovision_switches()")
+
     # =========================================================================
     # RMA Operations
     # =========================================================================
     
-    def _create_rma_switch(self) -> Dict[str, Any]:
+    def _handle_rma_state(
+        self, proposed_config: List[SwitchConfigModel]
+    ) -> None:
         """
-        Create RMA (switch replacement) operations using RMAConfigModel.
-        Processes all switches in self.proposed that have RMA configurations.
-        
-        Path: POST /fabrics/{fabricName}/switches/{switchId}/actions/provisionRMA
+        Orchestrate the full RMA (Return Material Authorization) workflow.
+
+        Flow:
+            1. Collect all RMA entries from each SwitchConfigModel.
+            2. Query the bootstrap API for switches in the POAP loop
+               to obtain publicKey and fingerPrint for the new switch.
+            3. For each RMA entry, build an ``RMASwitchModel`` and POST
+               it to ``/switches/{oldSwitchId}/actions/provisionRMA``.
+            4. Wait for each new switch to become manageable.
+            5. Save credentials for each new switch.
+            6. Config save and deploy.
+
+        This method is called from ``manage_state()`` *before* normal
+        discovery to prevent RMA switches from going through the
+        regular add flow.
         """
-        self.log.debug("ENTER: _create_rma_switch()")
-        self.log.info(f"Creating RMA switches for {len(self.proposed)} configuration(s)")
-        
-        all_responses = []
-        
-        # Process each switch configuration
-        for switch in self.proposed:
-            seed_ip = switch.seed_ip
-            self.log.info(f"Processing RMA switch: {seed_ip}")
-            self.log.debug(f"Switch config: {switch.model_dump(by_alias=True)}")
-            
-            responses = []
-            
-            # Handle different input formats
-            rma_configs: List[RMAConfigModel] = []
-            
-            if isinstance(switch, SwitchConfigModel):
-                # Use validated RMAConfigModel from SwitchConfigModel
-                if switch.rma:
-                    rma_configs = switch.rma
-            elif isinstance(switch, RMASwitchModel):
-                # Legacy support - convert to RMAConfigModel (or process directly)
-                rma_configs = [switch]  # type: ignore
-            elif isinstance(switch, dict):
-                # Legacy dict support - validate as RMAConfigModel
-                if 'rma' in switch:
-                    raw_configs = switch['rma'] if isinstance(switch['rma'], list) else [switch['rma']]
-                    for raw_config in raw_configs:
-                        try:
-                            rma_configs.append(RMAConfigModel.model_validate(raw_config))
-                        except Exception as e:
-                            self.log.error(f"Invalid RMA config: {e}")
-                            raise
-            
-            for rma_config in rma_configs:
-                # Build RMASwitchModel from RMAConfigModel or legacy config
-                if isinstance(rma_config, RMASwitchModel):
-                    rma_model = rma_config
-                    old_switch_id = rma_config.old_serial if hasattr(rma_config, 'old_serial') else None
-                elif isinstance(rma_config, RMAConfigModel):
-                    # Extract fields from validated RMAConfigModel
-                    old_switch_id = rma_config.old_serial
-                    new_switch_id = rma_config.serial_number
-                    hostname = self._get_switch_field(switch, ['hostname'])
-                    ip = seed_ip
-                    model = rma_config.model
-                    software_version = rma_config.version
-                    gateway_ip_mask = rma_config.config_data.gateway
-                    image_policy = rma_config.image_policy
-                    switch_role = self._get_switch_field(switch, ['switch_role', 'switchRole', 'role'])
-                    password = self._get_switch_field(switch, ['password'])
-                    auth_proto = self._get_switch_field(switch, ['snmp_v3_auth_protocol', 'auth_proto'])
-                    discovery_username = rma_config.discovery_username
-                    discovery_password = rma_config.discovery_password
-                    public_key = ''
-                    finger_print = ''
-                    
-                    rma_model = RMASwitchModel(
-                        gatewayIpMask=gateway_ip_mask,
-                        model=model,
-                        softwareVersion=software_version,
-                        imagePolicy=image_policy,
-                        switchRole=switch_role,
-                        password=password,
-                        discoveryAuthProtocol=auth_proto or SnmpV3AuthProtocol.MD5,
-                        useNewCredentials=bool(discovery_username),
-                        discoveryUsername=discovery_username,
-                        discoveryPassword=discovery_password,
-                        hostname=hostname,
-                        ip=ip,
-                        newSwitchId=new_switch_id,
-                        publicKey=public_key,
-                        fingerPrint=finger_print
-                    )
-            
-                # Use the old switch ID in the path with ep class
-                endpoint = EpManageFabricSwitchProvisionRMA()
-                endpoint.fabric_name = self.fabric
-                endpoint.switch_id = old_switch_id
-                
-                payload = rma_model.to_payload()
-                
-                self.log.info(
-                    f"RMA: Replacing {old_switch_id} with {rma_model.new_switch_id}"
+        self.log.debug("ENTER: _handle_rma_state()")
+        self.log.info(
+            f"Processing RMA for {len(proposed_config)} switch config(s)"
+        )
+
+        # Check mode — preview only
+        if self.nd.module.check_mode:
+            self.log.info("Check mode: would run RMA provision")
+            self.results.action = "rma"
+            self.results.response_current = {"MESSAGE": "check mode — skipped"}
+            self.results.result_current = {"success": True, "changed": True}
+            self.results.diff_current = {
+                "rma_switches": [
+                    pc.seed_ip for pc in proposed_config
+                ]
+            }
+            self.results.register_task_result()
+            self.results.changed = True
+            self.results.register_final_result()
+            return
+
+        # ------------------------------------------------------------- #
+        # Collect all (SwitchConfigModel, RMAConfigModel) pairs
+        # ------------------------------------------------------------- #
+        rma_entries: List[Tuple[SwitchConfigModel, RMAConfigModel]] = []
+
+        for switch_cfg in proposed_config:
+            if not switch_cfg.rma:
+                self.log.warning(
+                    f"Switch config for {switch_cfg.seed_ip} has no RMA "
+                    f"block — skipping"
                 )
-                self.log.debug(f"RMA endpoint: {endpoint.path}")
-                self.log.debug(f"RMA payload (password masked): {self._mask_password(payload)}")
-                
-                # Make the request
-                self.nd.request(path=endpoint.path, verb=endpoint.verb, data=payload)
-                
-                # Get response and result from RestSend
-                response = self.nd.rest_send.response_current
-                result = self.nd.rest_send.result_current
-                
-                # Register the task result
-                self.results.action = "rma"
-                self.results.response_current = response
-                self.results.result_current = result
-                self.results.diff_current = payload
-                self.results.register_task_result()
-                
-                responses.append(response)
-                self.log.debug(f"RMA request completed for {old_switch_id} -> {rma_model.new_switch_id}")
-                
-                # Wait for new switch to be manageable
-                self.log.debug(f"Waiting for RMA switch {rma_model.new_switch_id} to become manageable")
-                success = self.wait_utils.wait_for_switch_manageable([rma_model.new_switch_id])
-                if not success:
-                    self.log.warning(f"RMA switch {rma_model.new_switch_id} did not become manageable")
-                else:
-                    self.log.debug(f"RMA switch {rma_model.new_switch_id} is now manageable")
-        return {"rma_responses": all_responses}
+                continue
+
+            for rma_cfg in switch_cfg.rma:
+                rma_entries.append((switch_cfg, rma_cfg))
+
+        if not rma_entries:
+            self.log.warning("No RMA entries found — nothing to process")
+            self.results.action = "rma"
+            self.results.response_current = {"MESSAGE": "no switches to process"}
+            self.results.result_current = {"success": True, "changed": False}
+            self.results.diff_current = {}
+            self.results.register_task_result()
+            self.results.register_final_result()
+            return
+
+        self.log.info(f"Found {len(rma_entries)} RMA entry/entries to process")
+
+        # ------------------------------------------------------------- #
+        # Query bootstrap API for publicKey / fingerPrint of new switches
+        # ------------------------------------------------------------- #
+        bootstrap_switches = self._query_bootstrap_switches()
+        bootstrap_index: Dict[str, Dict[str, Any]] = {
+            sw.get("serialNumber", sw.get("serial_number", "")): sw
+            for sw in bootstrap_switches
+        }
+        self.log.debug(
+            f"Bootstrap index contains {len(bootstrap_index)} switch(es): "
+            f"{list(bootstrap_index.keys())}"
+        )
+
+        # ------------------------------------------------------------- #
+        # Build and submit each RMA request
+        # ------------------------------------------------------------- #
+        switch_actions: List[Tuple[str, SwitchConfigModel]] = []
+
+        for switch_cfg, rma_cfg in rma_entries:
+            new_serial = rma_cfg.serial_number
+            bootstrap_data = bootstrap_index.get(new_serial)
+
+            if not bootstrap_data:
+                msg = (
+                    f"New switch serial {new_serial} not found in "
+                    f"bootstrap API response. The switch is not in the "
+                    f"POAP loop. Ensure the replacement switch is powered "
+                    f"on and POAP/DHCP is enabled in the fabric."
+                )
+                self.log.error(msg)
+                self.nd.module.fail_json(msg=msg)
+
+            rma_model = self._build_rma_model(
+                switch_cfg, rma_cfg, bootstrap_data
+            )
+            self.log.info(
+                f"Built RMA model: replacing {rma_cfg.old_serial} with "
+                f"{rma_model.new_switch_id}"
+            )
+
+            self._provision_rma_switch(rma_cfg.old_serial, rma_model)
+            switch_actions.append((rma_model.new_switch_id, switch_cfg))
+
+        # ------------------------------------------------------------- #
+        # Post-processing: wait, save credentials, finalize
+        # ------------------------------------------------------------- #
+        all_new_serials = [sn for sn, _ in switch_actions]
+
+        # Wait for all new switches to become manageable
+        self.log.info(
+            f"Waiting for {len(all_new_serials)} RMA switch(es) to "
+            f"become manageable: {all_new_serials}"
+        )
+        success = self.wait_utils.wait_for_switch_manageable(all_new_serials)
+        if not success:
+            self.log.warning(
+                "One or more RMA switches did not become manageable"
+            )
+
+        # Save credentials for new switches
+        self._bulk_save_credentials(switch_actions)
+
+        # Config save and deploy
+        self._finalize_operations()
+
+        self.results.changed = True
+        self.results.register_final_result()
+        self.log.debug("EXIT: _handle_rma_state()")
+
+    # --------------------------------------------------------------------- #
+
+    def _build_rma_model(
+        self,
+        switch_cfg: SwitchConfigModel,
+        rma_cfg: RMAConfigModel,
+        bootstrap_data: Dict[str, Any],
+    ) -> RMASwitchModel:
+        """
+        Merge user-supplied RMA config with bootstrap API data to create
+        a complete ``RMASwitchModel``.
+
+        Priority:
+            * User config values always win.
+            * Bootstrap API data supplies ``publicKey`` and ``fingerPrint``
+              which the user normally does not know.
+
+        Args:
+            switch_cfg:     Parent SwitchConfigModel (carries seed_ip, role,
+                            password).
+            rma_cfg:        The RMAConfigModel from the user playbook.
+            bootstrap_data: Matching entry from the bootstrap GET API for the
+                            **new** switch (serial = rma_cfg.serial_number).
+        """
+        self.log.debug(
+            f"ENTER: _build_rma_model(new={rma_cfg.serial_number}, "
+            f"old={rma_cfg.old_serial})"
+        )
+
+        # --- fields from user config ---
+        new_switch_id = rma_cfg.serial_number
+        hostname = switch_cfg.hostname or bootstrap_data.get("hostname", "")
+        ip = switch_cfg.seed_ip
+        model_name = rma_cfg.model
+        version = rma_cfg.version
+        image_policy = rma_cfg.image_policy
+        gateway_ip_mask = rma_cfg.gateway
+        switch_role = switch_cfg.role
+        password = switch_cfg.password
+        # RMA always uses MD5 — hardcoded, not user-configurable
+        auth_proto = SnmpV3AuthProtocol.MD5
+
+        discovery_username = rma_cfg.discovery_username
+        discovery_password = rma_cfg.discovery_password
+
+        # --- fields from bootstrap API response ---
+        public_key = bootstrap_data.get("publicKey", "")
+        finger_print = bootstrap_data.get(
+            "fingerPrint", bootstrap_data.get("fingerprint", "")
+        )
+
+        rma_model = RMASwitchModel(
+            gatewayIpMask=gateway_ip_mask,
+            model=model_name,
+            softwareVersion=version,
+            imagePolicy=image_policy,
+            switchRole=switch_role,
+            password=password,
+            discoveryAuthProtocol=auth_proto,
+            discoveryUsername=discovery_username,
+            discoveryPassword=discovery_password,
+            hostname=hostname,
+            ip=ip,
+            newSwitchId=new_switch_id,
+            publicKey=public_key,
+            fingerPrint=finger_print,
+        )
+
+        self.log.debug(
+            f"EXIT: _build_rma_model() -> newSwitchId={rma_model.new_switch_id}"
+        )
+        return rma_model
+
+    # --------------------------------------------------------------------- #
+
+    def _provision_rma_switch(
+        self,
+        old_switch_id: str,
+        rma_model: RMASwitchModel,
+    ) -> None:
+        """
+        POST a single ``RMASwitchModel`` to the provisionRMA endpoint.
+
+        The endpoint is per-switch:
+        ``/fabrics/{fabricName}/switches/{oldSwitchId}/actions/provisionRMA``
+
+        Args:
+            old_switch_id: Serial number of the switch being replaced.
+            rma_model:     Complete payload model for the new switch.
+        """
+        self.log.debug("ENTER: _provision_rma_switch()")
+
+        endpoint = EpManageFabricSwitchProvisionRMA()
+        endpoint.fabric_name = self.fabric
+        endpoint.switch_id = old_switch_id
+
+        payload = rma_model.to_payload()
+
+        self.log.info(
+            f"RMA: Replacing {old_switch_id} with {rma_model.new_switch_id}"
+        )
+        self.log.debug(f"RMA endpoint: {endpoint.path}")
+        self.log.debug(
+            f"RMA payload (masked): {self._mask_password(payload)}"
+        )
+
+        # Make the request
+        self.nd.request(path=endpoint.path, verb=endpoint.verb, data=payload)
+
+        # Capture response
+        response = self.nd.rest_send.response_current
+        result = self.nd.rest_send.result_current
+
+        # Register task result
+        self.results.action = "rma"
+        self.results.response_current = response
+        self.results.result_current = result
+        self.results.diff_current = {
+            "old_switch_id": old_switch_id,
+            "new_switch_id": rma_model.new_switch_id,
+        }
+        self.results.register_task_result()
+
+        self.log.info(
+            f"RMA provision API response success: {result.get('success')}"
+        )
+        self.log.debug("EXIT: _provision_rma_switch()")
     
     # =========================================================================
     # Query Operations
@@ -2004,13 +2319,13 @@ class NDSwitchResourceModule():
         })
         self.results.changed = True
     
-    def _finalize_operations(self, serial_numbers: List[str] = None) -> None:
+    def _finalize_operations(self) -> None:
         """
         Finalize operations - save and deploy config.
-        
-        Args:
-            serial_numbers: Explicit list of switch serial numbers that were
-                            modified. Used for targeted config-deploy.
+
+        Calls configSave and configDeploy for the fabric based on the
+        ``save`` and ``deploy`` module parameters.  Neither endpoint
+        requires a request body.
         """
         if self.nd.module.check_mode:
             return
@@ -2019,9 +2334,9 @@ class NDSwitchResourceModule():
             self.log.info("Saving fabric configuration")
             self.fabric_utils.save_config()
 
-        if self.deploy_config_flag and serial_numbers:
-            self.log.info(f"Deploying configuration for {len(serial_numbers)} switch(es)")
-            self.fabric_utils.deploy_config(serial_numbers)
+        if self.deploy_config_flag:
+            self.log.info("Deploying fabric configuration")
+            self.fabric_utils.deploy_config()
     
     def exit_json(self) -> None:
         """

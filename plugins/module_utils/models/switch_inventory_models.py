@@ -1626,6 +1626,12 @@ class BootstrapImportSwitchModel(NDBaseModel):
             raise ValueError("serial_number cannot be empty")
         return result
 
+    @model_validator(mode='after')
+    def derive_use_new_credentials(self) -> Self:
+        """Auto-set useNewCredentials when both discoveryUsername and discoveryPassword are provided."""
+        self.use_new_credentials = bool(self.discovery_username and self.discovery_password)
+        return self
+
     def to_payload(self) -> Dict[str, Any]:
         """Convert to API payload format matching importBootstrap spec."""
         return self.model_dump(by_alias=True, exclude_none=True)
@@ -1648,6 +1654,199 @@ class ImportBootstrapSwitchesRequestModel(NDNestedModel):
         description="PowerOn Auto Provisioning switches"
     )
     
+    def to_payload(self) -> Dict[str, Any]:
+        """Convert to API payload format."""
+        return {
+            "switches": [s.to_payload() for s in self.switches]
+        }
+
+
+# =============================================================================
+# PRE-PROVISION MODELS
+# =============================================================================
+
+
+class PreProvisionSwitchModel(NDBaseModel):
+    """
+    Pre-provision a switch in the fabric.
+
+    Based on the ``preProvisionSwitch`` schema which is composed of:
+    - ``bootstrapBase``   (gatewayIpMask, model, softwareVersion, imagePolicy, switchRole, data)
+    - ``bootstrapCredential`` (password, discoveryAuthProtocol, useNewCredentials, discoveryUsername, discoveryPassword, remoteCredentialStore)
+    - ``preProvisionSpecific`` (hostname, ip, serialNumber, dhcpBootstrapIp, seedSwitch)
+
+    Path: POST /fabrics/{fabricName}/switchActions/preProvision
+    """
+
+    identifiers: ClassVar[List[str]] = ["serial_number"]
+    identifier_strategy: ClassVar[Literal["single", "composite", "hierarchical"]] = "single"
+    exclude_from_diff: ClassVar[List[str]] = ["password", "discovery_password"]
+
+    # --- preProvisionSpecific fields (required) ---
+    serial_number: str = Field(
+        ...,
+        alias="serialNumber",
+        description="Serial number of the switch to pre-provision",
+    )
+    hostname: str = Field(
+        ...,
+        description="Hostname of the switch to pre-provision",
+    )
+    ip: str = Field(
+        ...,
+        description="IP address of the switch to pre-provision",
+    )
+
+    # --- preProvisionSpecific fields (optional) ---
+    dhcp_bootstrap_ip: Optional[str] = Field(
+        default=None,
+        alias="dhcpBootstrapIp",
+        description="Used for device day-0 bring-up when using inband reachability",
+    )
+    seed_switch: bool = Field(
+        default=False,
+        alias="seedSwitch",
+        description="Use as seed switch",
+    )
+
+    # --- bootstrapBase fields (required) ---
+    model: str = Field(
+        ...,
+        description="Model of the switch to pre-provision",
+    )
+    software_version: str = Field(
+        ...,
+        alias="softwareVersion",
+        description="Software version of the switch to pre-provision",
+    )
+    gateway_ip_mask: str = Field(
+        ...,
+        alias="gatewayIpMask",
+        description="Gateway IP address with mask (e.g., 10.23.244.1/24)",
+    )
+
+    # --- bootstrapBase fields (optional) ---
+    image_policy: Optional[str] = Field(
+        default=None,
+        alias="imagePolicy",
+        description="Image policy associated with the switch during pre-provision",
+    )
+    switch_role: Optional[SwitchRole] = Field(
+        default=None,
+        alias="switchRole",
+        description="Role to assign to the switch",
+    )
+    data: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Pre-provision configuration data block (gatewayIpMask, models)",
+    )
+
+    # --- bootstrapCredential fields (required) ---
+    password: str = Field(
+        ...,
+        description="Switch password to be set during pre-provision for admin user",
+    )
+    discovery_auth_protocol: SnmpV3AuthProtocol = Field(
+        ...,
+        alias="discoveryAuthProtocol",
+        description="SNMP authentication protocol for discovery",
+    )
+
+    # --- bootstrapCredential fields (optional) ---
+    use_new_credentials: bool = Field(
+        default=False,
+        alias="useNewCredentials",
+        description=(
+            "If True, use discoveryUsername and discoveryPassword for local "
+            "remoteCredentialStore or use remoteCredentialStoreKey for CyberArk"
+        ),
+    )
+    discovery_username: Optional[str] = Field(
+        default=None,
+        alias="discoveryUsername",
+        description="Username for switch discovery post pre-provision",
+    )
+    discovery_password: Optional[str] = Field(
+        default=None,
+        alias="discoveryPassword",
+        description="Password for switch discovery post pre-provision",
+    )
+    remote_credential_store: Optional[RemoteCredentialStore] = Field(
+        default=None,
+        alias="remoteCredentialStore",
+        description="Type of credential store for discovery credentials",
+    )
+
+    # --- Validators ---
+
+    @field_validator("ip", "dhcp_bootstrap_ip", mode="before")
+    @classmethod
+    def validate_ip(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        result = SwitchValidators.validate_ip_address(v)
+        if result is None:
+            raise ValueError(f"Invalid IP address: {v}")
+        return result
+
+    @field_validator("hostname", mode="before")
+    @classmethod
+    def validate_host(cls, v: str) -> str:
+        result = SwitchValidators.validate_hostname(v)
+        if result is None:
+            raise ValueError("hostname cannot be empty")
+        return result
+
+    @field_validator("serial_number", mode="before")
+    @classmethod
+    def validate_serial(cls, v: str) -> str:
+        result = SwitchValidators.validate_serial_number(v)
+        if result is None:
+            raise ValueError("serial_number cannot be empty")
+        return result
+
+    @field_validator("gateway_ip_mask", mode="before")
+    @classmethod
+    def validate_gateway(cls, v: str) -> str:
+        if not v or "/" not in v:
+            raise ValueError(
+                "gatewayIpMask must include subnet mask (e.g., 10.23.244.1/24)"
+            )
+        try:
+            ip_network(v, strict=False)
+        except Exception as exc:
+            raise ValueError(f"Invalid gatewayIpMask: {v}") from exc
+        return v
+
+    @model_validator(mode='after')
+    def derive_use_new_credentials(self) -> Self:
+        """Auto-set useNewCredentials when both discoveryUsername and discoveryPassword are provided."""
+        self.use_new_credentials = bool(self.discovery_username and self.discovery_password)
+        return self
+
+    def to_payload(self) -> Dict[str, Any]:
+        """Convert to API payload format matching preProvision spec."""
+        return self.model_dump(by_alias=True, exclude_none=True)
+
+    @classmethod
+    def from_response(cls, response: Dict[str, Any]) -> Self:
+        """Create model instance from API response."""
+        return cls.model_validate(response)
+
+
+class PreProvisionSwitchesRequestModel(NDNestedModel):
+    """
+    Request body to create pre-provisioning definitions for the switches.
+
+    Based on: components/schemas/preProvisionRequestBody
+    """
+
+    identifiers: ClassVar[List[str]] = []
+    switches: List[PreProvisionSwitchModel] = Field(
+        ...,
+        description="PowerOn Auto Provisioning switches",
+    )
+
     def to_payload(self) -> Dict[str, Any]:
         """Convert to API payload format."""
         return {
@@ -1861,6 +2060,12 @@ class RMASwitchModel(NDBaseModel):
             raise ValueError("new_switch_id cannot be empty")
         return result
     
+    @model_validator(mode='after')
+    def derive_use_new_credentials(self) -> Self:
+        """Auto-set useNewCredentials when both discoveryUsername and discoveryPassword are provided."""
+        self.use_new_credentials = bool(self.discovery_username and self.discovery_password)
+        return self
+
     @model_validator(mode='after')
     def validate_rma_credentials(self) -> Self:
         """Validate RMA credential configuration logic."""
@@ -2237,16 +2442,23 @@ class POAPConfigModel(NDNestedModel):
 
     @model_validator(mode='after')
     def validate_operation_type(self) -> Self:
-        """Validate that either serial_number or preprovision_serial is provided."""
-        if not self.serial_number and not self.preprovision_serial:
+        """Validate that exactly one of serial_number or preprovision_serial is provided."""
+        has_serial = bool(self.serial_number)
+        has_preprov = bool(self.preprovision_serial)
+
+        if has_serial and has_preprov:
+            raise ValueError(
+                "Cannot specify both 'serial_number' and 'preprovision_serial' "
+                "in the same POAP entry. Use 'serial_number' for Bootstrap or "
+                "'preprovision_serial' for Pre-provision."
+            )
+
+        if not has_serial and not has_preprov:
             raise ValueError(
                 "Either 'serial_number' (for Bootstrap) or 'preprovision_serial' "
-                "(for Pre-provision) must be provided"
+                "(for Pre-provision) must be provided."
             )
-        
-        # Both can be provided for swap operation (NDFC only)
-        # No validation error if both are present
-        
+
         return self
     
     @field_validator('serial_number', 'preprovision_serial', mode='before')
@@ -2315,9 +2527,67 @@ class RMAConfigModel(NDNestedModel):
     config_data: ConfigDataModel = Field(
         ...,
         alias="configData",
-        description="Basic config data of switch to Bootstrap for RMA (modulesModel and gateway are mandatory)"
+        description="Basic config data of switch to Bootstrap for RMA (modulesModel)"
     )
-    
+    gateway: str = Field(
+        ...,
+        description="Gateway IP with mask for the switch (e.g., 192.168.0.1/24). Required for RMA."
+    )
+
+    @model_validator(mode='before')
+    @classmethod
+    def reject_gateway_in_config_data(cls, data: Any) -> Any:
+        """
+        Reject ``gateway`` if it appears inside ``config_data``.
+
+        The correct playbook format is::
+
+            rma:
+              - serial_number: NEW123
+                old_serial: OLD456
+                config_data:
+                  modulesModel: [N9K-X9364v]
+                gateway: 192.168.0.1/24       # sibling of config_data ✓
+
+        NOT::
+
+            rma:
+              - serial_number: NEW123
+                old_serial: OLD456
+                config_data:
+                  modulesModel: [N9K-X9364v]
+                  gateway: 192.168.0.1/24     # inside config_data ✗
+        """
+        if not isinstance(data, dict):
+            return data
+
+        cd = data.get("config_data") or data.get("configData")
+        if isinstance(cd, dict) and "gateway" in cd:
+            raise ValueError(
+                "'gateway' must be specified at the RMA level as a sibling "
+                "of 'config_data', not inside it. Move 'gateway' out of "
+                "'config_data'.\n"
+                "  Correct:\n"
+                "    config_data:\n"
+                "      modulesModel: [...]\n"
+                "    gateway: 192.168.0.1/24"
+            )
+
+        return data
+
+    @field_validator('gateway', mode='before')
+    @classmethod
+    def validate_gateway(cls, v: str) -> str:
+        """Validate gateway is a valid CIDR."""
+        import ipaddress
+        if not v or not v.strip():
+            raise ValueError("gateway cannot be empty for RMA")
+        try:
+            ipaddress.ip_interface(v.strip())
+        except ValueError as e:
+            raise ValueError(f"Invalid gateway IP address with mask: {v}") from e
+        return v.strip()
+
     @field_validator('serial_number', 'old_serial', mode='before')
     @classmethod
     def validate_serial_numbers(cls, v: str) -> str:
@@ -2497,6 +2767,34 @@ class SwitchConfigModel(NDBaseModel):
         description="Software version from inventory API"
     )
 
+    @model_validator(mode='before')
+    @classmethod
+    def reject_auth_proto_for_poap_rma(cls, data: Any) -> Any:
+        """Reject explicit auth_proto when POAP or RMA is configured.
+
+        POAP, Pre-provision, and RMA operations always use MD5 internally.
+        If the user explicitly supplies ``auth_proto`` (or ``authProto``)
+        alongside ``poap`` or ``rma``, raise an error so they know the
+        field is not user-configurable for these operation types.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        has_poap = bool(data.get("poap"))
+        has_rma = bool(data.get("rma"))
+
+        if has_poap or has_rma:
+            # Check both snake_case (Ansible playbook) and camelCase (API) keys
+            if "auth_proto" in data or "authProto" in data:
+                op = "POAP" if has_poap else "RMA"
+                raise ValueError(
+                    f"'auth_proto' must not be specified for {op} operations. "
+                    f"The authentication protocol is always MD5 and is set "
+                    f"automatically."
+                )
+
+        return data
+
     @model_validator(mode='after')
     def validate_poap_rma_mutual_exclusion(self) -> Self:
         """Validate that POAP and RMA are mutually exclusive."""
@@ -2517,10 +2815,6 @@ class SwitchConfigModel(NDBaseModel):
             # For POAP and RMA, username should be 'admin'
             if self.user_name != "admin":
                 raise ValueError("For POAP and RMA operations, user_name should be 'admin'")
-            
-            # For POAP and RMA, auth_proto should be MD5
-            if self.auth_proto != SnmpV3AuthProtocol.MD5:
-                raise ValueError("For POAP and RMA operations, auth_proto should be 'MD5'")
         
         return self
     
