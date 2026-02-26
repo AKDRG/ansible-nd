@@ -134,23 +134,83 @@ options:
                         description:
                         - Image policy to apply.
                         type: str
-                    gateway_ip:
+                    config_data:
                         description:
-                        - Gateway IP with subnet mask (e.g., 192.168.1.1/24).
-                        type: str
+                        - Basic configuration data for the switch during Bootstrap/Pre-provision.
+                        - C(models) and C(gateway) are mandatory.
+                        - C(models) is list of model of modules in switch to Bootstrap/Pre-provision.
+                        - C(gateway) is the gateway IP with mask for the switch.
+                        type: dict
+                        suboptions:
+                            models:
+                                description:
+                                - List of module models in the switch (e.g., N9K-X9364v, N9K-vSUP).
+                                type: list
+                                elements: str
+                            gateway:
+                                description:
+                                - Gateway IP with subnet mask (e.g., 192.168.0.1/24).
+                                type: str
             rma:
                 description:
-                - RMA (Return Material Authorization) configuration for switch replacement.
+                - RMA an existing switch with a new one.
+                - Please note that the existing switch should be configured and deployed in maintenance mode.
+                - Please note that the existing switch being replaced should be shutdown state or out of network.
                 type: list
                 elements: dict
                 suboptions:
-                    old_serial:
+                    discovery_username:
                         description:
-                        - Serial number of switch being replaced.
+                        - Username for device discovery during POAP and RMA discovery.
                         type: str
-                        required: true
+                    discovery_password:
+                        description:
+                        - Password for device discovery during POAP and RMA discovery.
+                        type: str
                     serial_number:
                         description:
+                        - Serial number of switch to Bootstrap for RMA.
+                        type: str
+                        required: true
+                    old_serial:
+                        description:
+                        - Serial number of switch to be replaced by RMA.
+                        type: str
+                        required: true
+                    model:
+                        description:
+                        - Model of switch to Bootstrap for RMA.
+                        type: str
+                        required: true
+                    version:
+                        description:
+                        - Software version of switch to Bootstrap for RMA.
+                        type: str
+                        required: true
+                    image_policy:
+                        description:
+                        - Name of the image policy to be applied on switch during Bootstrap for RMA.
+                        type: str
+                    config_data:
+                        description:
+                        - Basic config data of switch to Bootstrap for RMA.
+                        - C(models) and C(gateway) are mandatory.
+                        - C(models) is list of model of modules in switch to Bootstrap for RMA.
+                        - C(gateway) is the gateway IP with mask for the switch to Bootstrap for RMA.
+                        type: dict
+                        required: true
+                        suboptions:
+                            models:
+                                description:
+                                - List of module models in the switch.
+                                type: list
+                                elements: str
+                                required: true
+                            gateway:
+                                description:
+                                - Gateway IP with subnet mask (e.g., 192.168.0.1/24).
+                                type: str
+                                required: true
                         - Serial number of new replacement switch.
                         type: str
                         required: true
@@ -365,7 +425,18 @@ def main():
                         version=dict(type="str"),
                         hostname=dict(type="str"),
                         image_policy=dict(type="str"),
-                        gateway_ip=dict(type="str"),
+                        config_data=dict(
+                            type="dict",
+                            options=dict(
+                                models=dict(
+                                    type="list",
+                                    elements="str",
+                                ),
+                                gateway=dict(
+                                    type="str",
+                                ),
+                            ),
+                        ),
                     ),
                 ),
                 rma=dict(
@@ -376,11 +447,24 @@ def main():
                         serial_number=dict(type="str", required=True),
                         model=dict(type="str", required=True),
                         version=dict(type="str", required=True),
-                        hostname=dict(type="str", required=True),
-                        image_policy=dict(type="str", required=True),
-                        ip=dict(type="str", required=True),
-                        gateway_ip=dict(type="str", required=True),
-                        discovery_password=dict(type="str", no_log=True, required=True),
+                        image_policy=dict(type="str"),
+                        discovery_username=dict(type="str"),
+                        discovery_password=dict(type="str", no_log=True),
+                        config_data=dict(
+                            type="dict",
+                            required=True,
+                            options=dict(
+                                models=dict(
+                                    type="list",
+                                    elements="str",
+                                    required=True,
+                                ),
+                                gateway=dict(
+                                    type="str",
+                                    required=True,
+                                ),
+                            ),
+                        ),
                     ),
                 ),
             ),
