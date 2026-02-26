@@ -142,23 +142,21 @@ class FabricUtils:
             self.log.error(f"Config save failed for fabric {self.fabric}: {e}")
             raise SwitchOperationError(f"Failed to save config for fabric {self.fabric}: {e}")
     
-    def deploy_config(self, serial_numbers: List[str]) -> Dict[str, Any]:
+    def deploy_config(self) -> Dict[str, Any]:
         """
-        Deploy pending configuration to switches.
-        
-        Args:
-            serial_numbers: List of switch serial numbers to deploy
+        Deploy pending configuration to switches in the fabric.
+
+        The configDeploy endpoint does not require a request body;
+        it deploys all pending changes for the fabric.
             
         Returns:
             API response
         """
-        payload = {"switches": serial_numbers}
-        
-        self.log.info(f"Deploying config to switches: {serial_numbers}")
+        self.log.info(f"Deploying config for fabric: {self.fabric}")
         
         try:
-            response = self.nd.request(self.ep_config_deploy.path, verb=self.ep_config_deploy.verb, data=payload)
-            self.log.info(f"Config deploy initiated for: {serial_numbers}")
+            response = self.nd.request(self.ep_config_deploy.path, verb=self.ep_config_deploy.verb)
+            self.log.info(f"Config deploy initiated for fabric: {self.fabric}")
             return response
         except Exception as e:
             self.log.error(f"Config deploy failed: {e}")
