@@ -31,7 +31,7 @@ __metaclass__ = type
 
 import re
 from enum import Enum
-from ipaddress import ip_address, ip_network
+from ipaddress import ip_address, ip_interface, ip_network
 from pydantic import Field, ValidationInfo, computed_field, field_validator, model_validator
 from typing import List, Dict, Any, Optional, ClassVar, Literal, Union
 from typing_extensions import Self
@@ -605,7 +605,7 @@ class AdditionalSwitchData(NDNestedModel):
     Based on: components/schemas/additionalSwitchData
     """
     identifiers: ClassVar[List[str]] = []
-    usage: Literal["others"] = Field(
+    usage: Optional[str] = Field(
         default="others",
         description="The usage of additional data"
     )
@@ -704,7 +704,7 @@ class AdditionalAciSwitchData(NDNestedModel):
     Based on: components/schemas/additionalAciSwitchData
     """
     identifiers: ClassVar[List[str]] = []
-    usage: Literal["aci"] = Field(
+    usage: Optional[str] = Field(
         default="aci",
         description="The usage of additional data"
     )
@@ -1226,6 +1226,21 @@ class SwitchDataModel(NDBaseModel):
         alias="telemetryIpCollection"
     )
     
+    @field_validator('additional_data', mode='before')
+    @classmethod
+    def parse_additional_data(cls, v: Any) -> Any:
+        """Route additionalData to the correct nested model.
+
+        The NDFC API may omit the ``usage`` field for non-ACI switches.
+        Default to ``"others"`` so Pydantic selects ``AdditionalSwitchData``
+        and coerces ``discoveryStatus`` / ``systemMode`` as proper enums.
+        """
+        if v is None or not isinstance(v, dict):
+            return v
+        if 'usage' not in v:
+            v = {**v, 'usage': 'others'}
+        return v
+
     @field_validator('switch_id', mode='before')
     @classmethod
     def validate_switch_id(cls, v: str) -> str:
@@ -1540,10 +1555,6 @@ class BootstrapImportSwitchModel(NDBaseModel):
         ...,
         description="Switch password to be set during bootstrap for admin user"
     )
-    use_new_credentials: bool = Field(
-        default=False,
-        alias="useNewCredentials"
-    )
     discovery_auth_protocol: SnmpV3AuthProtocol = Field(
         ...,
         alias="discoveryAuthProtocol"
@@ -1626,11 +1637,11 @@ class BootstrapImportSwitchModel(NDBaseModel):
             raise ValueError("serial_number cannot be empty")
         return result
 
-    @model_validator(mode='after')
-    def derive_use_new_credentials(self) -> Self:
-        """Auto-set useNewCredentials when both discoveryUsername and discoveryPassword are provided."""
-        self.use_new_credentials = bool(self.discovery_username and self.discovery_password)
-        return self
+    @computed_field(alias="useNewCredentials")
+    @property
+    def use_new_credentials(self) -> bool:
+        """Derive useNewCredentials from discoveryUsername and discoveryPassword."""
+        return bool(self.discovery_username and self.discovery_password)
 
     def to_payload(self) -> Dict[str, Any]:
         """Convert to API payload format matching importBootstrap spec."""
@@ -1972,10 +1983,6 @@ class RMASwitchModel(NDBaseModel):
         ...,
         alias="discoveryAuthProtocol"
     )
-    use_new_credentials: bool = Field(
-        default=False,
-        alias="useNewCredentials"
-    )
     discovery_username: Optional[str] = Field(
         default=None,
         alias="discoveryUsername"
@@ -2060,11 +2067,11 @@ class RMASwitchModel(NDBaseModel):
             raise ValueError("new_switch_id cannot be empty")
         return result
     
-    @model_validator(mode='after')
-    def derive_use_new_credentials(self) -> Self:
-        """Auto-set useNewCredentials when both discoveryUsername and discoveryPassword are provided."""
-        self.use_new_credentials = bool(self.discovery_username and self.discovery_password)
-        return self
+    @computed_field(alias="useNewCredentials")
+    @property
+    def use_new_credentials(self) -> bool:
+        """Derive useNewCredentials from discoveryUsername and discoveryPassword."""
+        return bool(self.discovery_username and self.discovery_password)
 
     @model_validator(mode='after')
     def validate_rma_credentials(self) -> Self:
@@ -2300,22 +2307,38 @@ class SwitchesSummaryModel(NDNestedModel):
 
 class ConfigDataModel(NDNestedModel):
     """
-    Configuration data for POAP/RMA operations.
-    
-    Used in Ansible playbook config for bootstrap config_data.
-    Contains only modulesModel. Gateway is specified at the POAP/RMA level,
-    NOT inside config_data.
-    
-    Based on: dcnm_inventory.py config.poap.config_data
+    Configuration data for POAP (Bootstrap / Pre-provision) and RMA operations.
+
+    Used in Ansible playbook config for bootstrap/pre-provision/RMA config_data.
+    Contains ``models`` (list of module models) and ``gateway`` (IP with mask).
+    Both fields are mandatory.
+
+    Based on: dcnm_inventory.py config.poap.config_data / config.rma.config_data
     """
     identifiers: ClassVar[List[str]] = []
-    
-    modules_model: List[str] = Field(
+
+    models: List[str] = Field(
         ...,
-        alias="modulesModel",
+        alias="models",
         min_length=1,
         description="List of model of modules in switch to Bootstrap/Pre-provision/RMA"
     )
+    gateway: str = Field(
+        ...,
+        description="Gateway IP with mask for the switch (e.g., 192.168.0.1/24)"
+    )
+
+    @field_validator('gateway', mode='before')
+    @classmethod
+    def validate_gateway(cls, v: str) -> str:
+        """Validate gateway is a valid CIDR."""
+        if not v or not v.strip():
+            raise ValueError("gateway cannot be empty")
+        try:
+            ip_interface(v.strip())
+        except ValueError as e:
+            raise ValueError(f"Invalid gateway IP address with mask: {v}") from e
+        return v.strip()
 
 
 class POAPConfigModel(NDNestedModel):
@@ -2377,68 +2400,11 @@ class POAPConfigModel(NDNestedModel):
     config_data: Optional[ConfigDataModel] = Field(
         default=None,
         alias="configData",
-        description="Basic config data of switch to Bootstrap/Pre-provision (modulesModel only)"
+        description=(
+            "Basic config data of switch to Bootstrap/Pre-provision. "
+            "'models' (list of module models) and 'gateway' (IP with mask) are mandatory."
+        ),
     )
-    gateway: Optional[str] = Field(
-        default=None,
-        description="Gateway IP with mask for the switch (e.g., 192.168.0.1/24)"
-    )
-    
-    @model_validator(mode='before')
-    @classmethod
-    def reject_gateway_in_config_data(cls, data: Any) -> Any:
-        """
-        Reject ``gateway`` if it appears inside ``config_data``.
-
-        The correct playbook format is::
-
-            poap:
-              - serial_number: ABC
-                config_data:
-                  modulesModel: [N9K-X9364v]
-                gateway: 192.168.0.1/24       # sibling of config_data ✓
-
-        NOT::
-
-            poap:
-              - serial_number: ABC
-                config_data:
-                  modulesModel: [N9K-X9364v]
-                  gateway: 192.168.0.1/24     # inside config_data ✗
-        """
-        if not isinstance(data, dict):
-            return data
-
-        # Check both snake_case and camelCase keys
-        cd = data.get("config_data") or data.get("configData")
-        if isinstance(cd, dict) and "gateway" in cd:
-            raise ValueError(
-                "'gateway' must be specified at the POAP level as a sibling "
-                "of 'config_data', not inside it. Move 'gateway' out of "
-                "'config_data'.\n"
-                "  Correct:\n"
-                "    config_data:\n"
-                "      modulesModel: [...]\n"
-                "    gateway: 192.168.0.1/24"
-            )
-
-        return data
-
-    @field_validator('gateway', mode='before')
-    @classmethod
-    def validate_gateway(cls, v: Optional[str]) -> Optional[str]:
-        """Validate gateway is a valid IP address with mask."""
-        if v is None:
-            return None
-        if not v:
-            raise ValueError("gateway cannot be empty")
-        if '/' not in v:
-            raise ValueError("gateway must include subnet mask (e.g., 192.168.0.1/24)")
-        try:
-            ip_network(v, strict=False)
-        except Exception as e:
-            raise ValueError(f"Invalid gateway IP address with mask: {v}") from e
-        return v
 
     @model_validator(mode='after')
     def validate_operation_type(self) -> Self:
@@ -2473,31 +2439,34 @@ class POAPConfigModel(NDNestedModel):
 class RMAConfigModel(NDNestedModel):
     """
     RMA (Return Material Authorization) configuration for Ansible playbook.
-    
+
     Used to replace an existing switch with a new one.
-    
+    The existing switch should be configured and deployed in maintenance mode.
+    The existing switch being replaced should be in shutdown state or out of
+    network.
+
     Based on: dcnm_inventory.py config.rma suboptions
     """
     identifiers: ClassVar[List[str]] = []
-    
+
     # Discovery credentials
     discovery_username: Optional[str] = Field(
         default=None,
         alias="discoveryUsername",
-        description="Username for device discovery during RMA"
+        description="Username for device discovery during POAP and RMA discovery"
     )
     discovery_password: Optional[str] = Field(
         default=None,
         alias="discoveryPassword",
-        description="Password for device discovery during RMA"
+        description="Password for device discovery during POAP and RMA discovery"
     )
-    
+
     # Required fields for RMA
     serial_number: str = Field(
         ...,
         alias="serialNumber",
         min_length=1,
-        description="Serial number of new switch to Bootstrap for RMA"
+        description="Serial number of switch to Bootstrap for RMA"
     )
     old_serial: str = Field(
         ...,
@@ -2508,85 +2477,30 @@ class RMAConfigModel(NDNestedModel):
     model: str = Field(
         ...,
         min_length=1,
-        description="Model of new switch to Bootstrap for RMA"
+        description="Model of switch to Bootstrap for RMA"
     )
     version: str = Field(
         ...,
         min_length=1,
-        description="Software version of new switch to Bootstrap for RMA"
+        description="Software version of switch to Bootstrap for RMA"
     )
-    
+
     # Optional fields
     image_policy: Optional[str] = Field(
         default=None,
         alias="imagePolicy",
-        description="Name of the image policy to be applied on switch during RMA"
+        description="Name of the image policy to be applied on switch during Bootstrap for RMA"
     )
-    
-    # Required config data for RMA
+
+    # Required config data for RMA (models list + gateway)
     config_data: ConfigDataModel = Field(
         ...,
         alias="configData",
-        description="Basic config data of switch to Bootstrap for RMA (modulesModel)"
+        description=(
+            "Basic config data of switch to Bootstrap for RMA. "
+            "'models' (list of module models) and 'gateway' (IP with mask) are mandatory."
+        ),
     )
-    gateway: str = Field(
-        ...,
-        description="Gateway IP with mask for the switch (e.g., 192.168.0.1/24). Required for RMA."
-    )
-
-    @model_validator(mode='before')
-    @classmethod
-    def reject_gateway_in_config_data(cls, data: Any) -> Any:
-        """
-        Reject ``gateway`` if it appears inside ``config_data``.
-
-        The correct playbook format is::
-
-            rma:
-              - serial_number: NEW123
-                old_serial: OLD456
-                config_data:
-                  modulesModel: [N9K-X9364v]
-                gateway: 192.168.0.1/24       # sibling of config_data ✓
-
-        NOT::
-
-            rma:
-              - serial_number: NEW123
-                old_serial: OLD456
-                config_data:
-                  modulesModel: [N9K-X9364v]
-                  gateway: 192.168.0.1/24     # inside config_data ✗
-        """
-        if not isinstance(data, dict):
-            return data
-
-        cd = data.get("config_data") or data.get("configData")
-        if isinstance(cd, dict) and "gateway" in cd:
-            raise ValueError(
-                "'gateway' must be specified at the RMA level as a sibling "
-                "of 'config_data', not inside it. Move 'gateway' out of "
-                "'config_data'.\n"
-                "  Correct:\n"
-                "    config_data:\n"
-                "      modulesModel: [...]\n"
-                "    gateway: 192.168.0.1/24"
-            )
-
-        return data
-
-    @field_validator('gateway', mode='before')
-    @classmethod
-    def validate_gateway(cls, v: str) -> str:
-        """Validate gateway is a valid CIDR."""
-        import ipaddress
-        if not v or not v.strip():
-            raise ValueError("gateway cannot be empty for RMA")
-        try:
-            ipaddress.ip_interface(v.strip())
-        except ValueError as e:
-            raise ValueError(f"Invalid gateway IP address with mask: {v}") from e
-        return v.strip()
 
     @field_validator('serial_number', 'old_serial', mode='before')
     @classmethod
@@ -2616,7 +2530,7 @@ class SwitchConfigModel(NDBaseModel):
             role="leaf"
         )
         
-        # POAP switch
+        # POAP switch (gateway is inside config_data)
         poap_config = SwitchConfigModel(
             seed_ip="192.168.0.2",
             user_name="admin",
@@ -2628,13 +2542,13 @@ class SwitchConfigModel(NDBaseModel):
                 "version": "9.3(7)",
                 "hostname": "switch1",
                 "config_data": {
-                    "modulesModel": ["N9K-X9364v"],
+                    "models": ["N9K-X9364v"],
                     "gateway": "192.168.0.1/24"
                 }
             }]
         )
         
-        # RMA switch
+        # RMA switch (gateway is inside config_data)
         rma_config = SwitchConfigModel(
             seed_ip="192.168.0.3",
             user_name="admin",
@@ -2645,7 +2559,7 @@ class SwitchConfigModel(NDBaseModel):
                 "model": "N9K-C9300v",
                 "version": "9.3(7)",
                 "config_data": {
-                    "modulesModel": ["N9K-X9364v"],
+                    "models": ["N9K-X9364v"],
                     "gateway": "192.168.0.1/24"
                 }
             }]
@@ -2770,12 +2684,16 @@ class SwitchConfigModel(NDBaseModel):
     @model_validator(mode='before')
     @classmethod
     def reject_auth_proto_for_poap_rma(cls, data: Any) -> Any:
-        """Reject explicit auth_proto when POAP or RMA is configured.
+        """Reject non-MD5 auth_proto when POAP or RMA is configured.
 
         POAP, Pre-provision, and RMA operations always use MD5 internally.
-        If the user explicitly supplies ``auth_proto`` (or ``authProto``)
-        alongside ``poap`` or ``rma``, raise an error so they know the
-        field is not user-configurable for these operation types.
+        If the user explicitly supplies a non-MD5 ``auth_proto`` (or
+        ``authProto``) alongside ``poap`` or ``rma``, raise an error so
+        they know the field is not user-configurable for these operation
+        types.
+
+        Note: Ansible argspec injects the default ``"MD5"`` even when the
+        user omits ``auth_proto``, so we must allow MD5 through.
         """
         if not isinstance(data, dict):
             return data
@@ -2785,13 +2703,17 @@ class SwitchConfigModel(NDBaseModel):
 
         if has_poap or has_rma:
             # Check both snake_case (Ansible playbook) and camelCase (API) keys
-            if "auth_proto" in data or "authProto" in data:
-                op = "POAP" if has_poap else "RMA"
-                raise ValueError(
-                    f"'auth_proto' must not be specified for {op} operations. "
-                    f"The authentication protocol is always MD5 and is set "
-                    f"automatically."
-                )
+            auth_val = data.get("auth_proto") or data.get("authProto")
+            if auth_val is not None:
+                # Normalize to lowercase for comparison
+                normalized = str(auth_val).strip().lower()
+                if normalized not in ("md5", ""):
+                    op = "POAP" if has_poap else "RMA"
+                    raise ValueError(
+                        f"'auth_proto' must not be specified for {op} operations. "
+                        f"The authentication protocol is always MD5 and is set "
+                        f"automatically. Received: '{auth_val}'"
+                    )
 
         return data
 

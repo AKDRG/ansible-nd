@@ -20,6 +20,8 @@ from .models.switch_inventory_models import (
     SnmpV3AuthProtocol,
     PlatformType,
     RemoteCredentialStore,
+    DiscoveryStatus,
+    SystemMode,
     SwitchDiscoveryModel,
     SwitchDataModel,
     AddSwitchesRequestModel,
@@ -1054,79 +1056,7 @@ class NDSwitchResourceModule():
             )
         
         return groups
-    
-    def _create_normal_switch(self) -> Dict[str, Any]:
-        """
-        Create normal switches with optimized bulk workflow:
-        1. Group switches by credentials
-        2. Bulk discovery (one API call per group)
-        3. Bulk add to fabric (one API call per group)
-        4. Wait for manageability
-        5. Save credentials
-        """
-        self.log.debug("ENTER: _create_normal_switch()")
-        self.log.info(f"Creating {len(self.proposed)} normal switch(es)")
-        
-        # Step 3: Bulk add discovered switches to fabric (one API call per credential group)
-        self.log.debug("Step 3: Bulk adding switches to fabric")
-        all_responses = []
-        all_serial_numbers = []
 
-        credential_groups = self._group_switches_by_credentials(configs)
-        for group_key, switches in credential_groups.items():
-            username, password_hash, auth_proto, platform_type, preserve_config = group_key
-            password = switches[0].password
-            
-            # Filter switches that were successfully discovered
-            discovered_switches = [
-                (sw, all_discovered.get(sw.seed_ip))
-                for sw in switches
-                if all_discovered.get(sw.seed_ip)
-            ]
-            
-            if not discovered_switches:
-                self.log.warning(f"No switches discovered in group, skipping add")
-                continue
-            
-            response = self._bulk_add_switches_to_fabric(
-                switches=discovered_switches,
-                username=username,
-                password=password,
-                auth_proto=auth_proto,
-                platform_type=platform_type,
-                preserve_config=preserve_config
-            )
-            all_responses.append(response)
-            
-            # Collect serial numbers for wait operation
-            for _, discovered in discovered_switches:
-                if discovered and discovered.get("serialNumber"):
-                    all_serial_numbers.append(discovered.get("serialNumber"))
-        
-        # Step 4: Wait for all switches to be manageable
-        self.log.debug("Step 4: Waiting for switches to become manageable")
-        if all_serial_numbers:
-            self.log.debug(f"Waiting for {len(all_serial_numbers)} switch(es): {all_serial_numbers}")
-            success = self.wait_utils.wait_for_switch_manageable(all_serial_numbers)
-            if not success:
-                self.log.warning("Some switches did not become fully manageable")
-            else:
-                self.log.debug("All switches are now manageable")
-        
-        # Step 5: Save credentials for all switches
-        self.log.debug("Step 5: Saving credentials for switches")
-        for group_key, switches in credential_groups.items():
-            username, password_hash, auth_proto, platform_type, preserve_config = group_key
-            password = switches[0].password
-            
-            for switch in switches:
-                discovered = all_discovered.get(switch.seed_ip)
-                if discovered and discovered.get("serialNumber"):
-                    self._save_switch_credentials(switch, discovered.get("serialNumber"))
-        
-        self.log.debug(f"EXIT: _create_normal_switch() -> {len(all_responses)} responses")
-        return {"responses": all_responses, "discovered": all_discovered}
-    
     def _get_switch_field(self, switch: Union[SwitchConfigModel, SwitchDiscoveryModel, Dict[str, Any]], field_names: List[str]) -> Optional[Any]:
         """
         Extract a field value from switch config (model or dict).
@@ -1749,7 +1679,7 @@ class NDSwitchResourceModule():
         model = poap_cfg.model
         version = poap_cfg.version
         image_policy = poap_cfg.image_policy
-        gateway_ip_mask = poap_cfg.gateway
+        gateway_ip_mask = poap_cfg.config_data.gateway if poap_cfg.config_data else None
         switch_role = switch_cfg.role
         password = switch_cfg.password
         # POAP/bootstrap always uses MD5 regardless of user-supplied auth_proto
@@ -1768,12 +1698,12 @@ class NDSwitchResourceModule():
 
         # --- optional data block (models / gateway) ---
         data_block: Optional[Dict[str, Any]] = None
-        if poap_cfg.config_data or gateway_ip_mask:
+        if poap_cfg.config_data:
             data_block = {}
             if gateway_ip_mask:
                 data_block["gatewayIpMask"] = gateway_ip_mask
-            if poap_cfg.config_data and poap_cfg.config_data.modules_model:
-                data_block["models"] = poap_cfg.config_data.modules_model
+            if poap_cfg.config_data.models:
+                data_block["models"] = poap_cfg.config_data.models
 
         bootstrap_model = BootstrapImportSwitchModel(
             serialNumber=serial_number,
@@ -1881,7 +1811,7 @@ class NDSwitchResourceModule():
         model_name = poap_cfg.model
         version = poap_cfg.version
         image_policy = poap_cfg.image_policy
-        gateway_ip_mask = poap_cfg.gateway
+        gateway_ip_mask = poap_cfg.config_data.gateway if poap_cfg.config_data else None
         switch_role = switch_cfg.role
         password = switch_cfg.password
         # POAP/preprovision always uses MD5 regardless of user-supplied auth_proto
@@ -1892,12 +1822,12 @@ class NDSwitchResourceModule():
 
         # --- optional data block (models / gateway) ---
         data_block: Optional[Dict[str, Any]] = None
-        if poap_cfg.config_data or gateway_ip_mask:
+        if poap_cfg.config_data:
             data_block = {}
             if gateway_ip_mask:
                 data_block["gatewayIpMask"] = gateway_ip_mask
-            if poap_cfg.config_data and poap_cfg.config_data.modules_model:
-                data_block["models"] = poap_cfg.config_data.modules_model
+            if poap_cfg.config_data.models:
+                data_block["models"] = poap_cfg.config_data.models
 
         preprov_model = PreProvisionSwitchModel(
             serialNumber=serial_number,
@@ -2043,6 +1973,11 @@ class NDSwitchResourceModule():
         self.log.info(f"Found {len(rma_entries)} RMA entry/entries to process")
 
         # ------------------------------------------------------------- #
+        # Validate old switches exist and are in correct state
+        # ------------------------------------------------------------- #
+        old_switch_info = self._validate_rma_prerequisites(rma_entries)
+
+        # ------------------------------------------------------------- #
         # Query bootstrap API for publicKey / fingerPrint of new switches
         # ------------------------------------------------------------- #
         bootstrap_switches = self._query_bootstrap_switches()
@@ -2075,7 +2010,8 @@ class NDSwitchResourceModule():
                 self.nd.module.fail_json(msg=msg)
 
             rma_model = self._build_rma_model(
-                switch_cfg, rma_cfg, bootstrap_data
+                switch_cfg, rma_cfg, bootstrap_data,
+                old_switch_info[rma_cfg.old_serial],
             )
             self.log.info(
                 f"Built RMA model: replacing {rma_cfg.old_serial} with "
@@ -2113,11 +2049,105 @@ class NDSwitchResourceModule():
 
     # --------------------------------------------------------------------- #
 
+    def _validate_rma_prerequisites(
+        self,
+        rma_entries: List[Tuple[SwitchConfigModel, RMAConfigModel]],
+    ) -> Dict[str, Dict[str, Any]]:
+        """Validate that each old switch meets RMA prerequisites.
+
+        For every ``(switch_cfg, rma_cfg)`` pair, verify:
+
+        1. ``old_serial`` exists in the current fabric inventory.
+        2. The switch's discovery status is **unreachable**.
+        3. The switch's system mode is **maintenance**.
+
+        Returns:
+            Dict keyed by ``old_serial`` with:
+                ``hostname``     – the existing switch's hostname
+                ``switch_data``  – the full ``SwitchDataModel``
+        """
+        self.log.debug("ENTER: _validate_rma_prerequisites()")
+
+        # Build lookup by serial from existing inventory
+        existing_by_serial: Dict[str, SwitchDataModel] = {
+            sw.serial_number: sw
+            for sw in self.existing
+            if sw.serial_number
+        }
+
+        result: Dict[str, Dict[str, Any]] = {}
+
+        for switch_cfg, rma_cfg in rma_entries:
+            old_serial = rma_cfg.old_serial
+
+            # --- 1. Must exist in fabric inventory ---
+            old_switch = existing_by_serial.get(old_serial)
+            if old_switch is None:
+                self.nd.module.fail_json(
+                    msg=(
+                        f"RMA: old_serial '{old_serial}' not found in "
+                        f"fabric '{self.fabric}'. The switch being "
+                        f"replaced must exist in the inventory."
+                    )
+                )
+
+            ad = old_switch.additional_data
+
+            if ad is None:
+                self.nd.module.fail_json(
+                    msg=(
+                        f"RMA: Switch '{old_serial}' has no additional data "
+                        f"in the inventory response. Cannot verify discovery "
+                        f"status and system mode."
+                    )
+                )
+
+            # --- 2. Discovery status must be unreachable ---
+            # NOTE: use_enum_values=True in NDBaseModel stores plain
+            # strings, so compare against the enum's .value.
+            if ad.discovery_status != DiscoveryStatus.UNREACHABLE.value:
+                self.nd.module.fail_json(
+                    msg=(
+                        f"RMA: Switch '{old_serial}' has discovery status "
+                        f"'{ad.discovery_status or 'unknown'}', "
+                        f"expected 'unreachable'. The old switch must be "
+                        f"unreachable before RMA can proceed."
+                    )
+                )
+
+            # --- 3. System mode must be maintenance ---
+            if ad.system_mode != SystemMode.MAINTENANCE.value:
+                self.nd.module.fail_json(
+                    msg=(
+                        f"RMA: Switch '{old_serial}' is in "
+                        f"'{ad.system_mode or 'unknown'}' "
+                        f"mode, expected 'maintenance'. Put the switch in "
+                        f"maintenance mode before initiating RMA."
+                    )
+                )
+
+            result[old_serial] = {
+                "hostname": old_switch.hostname or "",
+                "switch_data": old_switch,
+            }
+            self.log.info(
+                f"RMA prerequisite check passed for old_serial "
+                f"'{old_serial}' (hostname={old_switch.hostname}, "
+                f"discovery={ad.discovery_status}, "
+                f"mode={ad.system_mode})"
+            )
+
+        self.log.debug("EXIT: _validate_rma_prerequisites()")
+        return result
+
+    # --------------------------------------------------------------------- #
+
     def _build_rma_model(
         self,
         switch_cfg: SwitchConfigModel,
         rma_cfg: RMAConfigModel,
         bootstrap_data: Dict[str, Any],
+        old_switch_info: Dict[str, Any],
     ) -> RMASwitchModel:
         """
         Merge user-supplied RMA config with bootstrap API data to create
@@ -2127,13 +2157,16 @@ class NDSwitchResourceModule():
             * User config values always win.
             * Bootstrap API data supplies ``publicKey`` and ``fingerPrint``
               which the user normally does not know.
+            * ``hostname`` is taken from the old switch's inventory record.
 
         Args:
-            switch_cfg:     Parent SwitchConfigModel (carries seed_ip, role,
-                            password).
-            rma_cfg:        The RMAConfigModel from the user playbook.
-            bootstrap_data: Matching entry from the bootstrap GET API for the
-                            **new** switch (serial = rma_cfg.serial_number).
+            switch_cfg:      Parent SwitchConfigModel (carries seed_ip, role,
+                             password).
+            rma_cfg:         The RMAConfigModel from the user playbook.
+            bootstrap_data:  Matching entry from the bootstrap GET API for the
+                             **new** switch (serial = rma_cfg.serial_number).
+            old_switch_info: Dict with ``hostname`` and ``switch_data`` from
+                             ``_validate_rma_prerequisites``.
         """
         self.log.debug(
             f"ENTER: _build_rma_model(new={rma_cfg.serial_number}, "
@@ -2142,12 +2175,13 @@ class NDSwitchResourceModule():
 
         # --- fields from user config ---
         new_switch_id = rma_cfg.serial_number
-        hostname = switch_cfg.hostname or bootstrap_data.get("hostname", "")
+        # Hostname comes from the old switch's inventory record
+        hostname = old_switch_info.get("hostname", "")
         ip = switch_cfg.seed_ip
         model_name = rma_cfg.model
         version = rma_cfg.version
         image_policy = rma_cfg.image_policy
-        gateway_ip_mask = rma_cfg.gateway
+        gateway_ip_mask = rma_cfg.config_data.gateway
         switch_role = switch_cfg.role
         password = switch_cfg.password
         # RMA always uses MD5 — hardcoded, not user-configurable
