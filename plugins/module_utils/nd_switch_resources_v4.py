@@ -54,20 +54,20 @@ from .models.switch_inventory_models import (
     RMAConfigModel,
 )
 from .switch_utils import FabricUtils, SwitchWaitUtils, SwitchOperationError
-from .ep.ep_api_v1_manage_fabric_switches import (
+from .ep.v1.ep_manage_fabric_switches import (
     EpManageFabricSwitchesGet,
     EpManageFabricSwitchesAdd,
 )
-from .ep.ep_api_v1_manage_fabric_bootstrap import EpManageFabricBootstrapGet
-from .ep.ep_api_v1_manage_fabric_discovery import EpManageFabricShallowDiscovery
-from .ep.ep_api_v1_manage_fabric_switch_actions import (
+from .ep.v1.ep_manage_fabric_bootstrap import EpManageFabricBootstrapGet
+from .ep.v1.ep_manage_fabric_discovery import EpManageFabricShallowDiscovery
+from .ep.v1.ep_manage_fabric_switch_actions import (
     EpManageFabricSwitchProvisionRMA,
     EpManageFabricSwitchActionsImportBootstrap,
     EpManageFabricSwitchActionsPreProvision,
     EpManageFabricSwitchActionsRemove,
     EpManageFabricSwitchActionsChangeRoles,
 )
-from .ep.ep_api_v1_manage_credentials import EpManageCredentialsSwitchesCreate
+from .ep.v1.ep_manage_credentials import EpManageCredentialsSwitchesCreate
 
 
 # =========================================================================

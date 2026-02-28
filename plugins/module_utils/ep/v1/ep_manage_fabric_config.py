@@ -13,19 +13,22 @@ Endpoints covered:
 - Config save (recalculate)
 - Config deploy
 - Get fabric info
+- Inventory discover status
 """
 
-from __future__ import absolute_import, division, print_function
+from __future__ import absolute_import, annotations, division, print_function
 
-__metaclass__ = type  # pylint: disable=invalid-name
+# pylint: disable=invalid-name
+__metaclass__ = type
 __author__ = "Akshayanat C S"
+# pylint: enable=invalid-name
 
 from typing import Literal
 
 from ansible_collections.cisco.nd.plugins.module_utils.enums import HttpVerbEnum
-from ansible_collections.cisco.nd.plugins.module_utils.ep.base_paths_manage import BasePath
 from ansible_collections.cisco.nd.plugins.module_utils.ep.endpoint_mixins import FabricNameMixin
 from ansible_collections.cisco.nd.plugins.module_utils.ep.endpoint_query_params import FabricConfigDeployQueryParams
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.base_paths_manage import BasePath
 from ansible_collections.cisco.nd.plugins.module_utils.pydantic_compat import BaseModel, ConfigDict, Field
 
 # Common config for basic validation
@@ -73,8 +76,7 @@ class EpManageFabricConfigSave(FabricNameMixin, BaseModel):
         if self.fabric_name is None:
             raise ValueError("fabric_name must be set before accessing path")
 
-        base_path = BasePath.manage_fabrics(self.fabric_name, "actions", "configSave")
-        return base_path
+        return BasePath.manage_fabrics(self.fabric_name, "actions", "configSave")
 
     @property
     def verb(self) -> str:
@@ -236,8 +238,7 @@ class EpManageFabricInventoryDiscover(FabricNameMixin, BaseModel):
         if self.fabric_name is None:
             raise ValueError("fabric_name must be set before accessing path")
 
-        base_path = BasePath.manage_fabrics(self.fabric_name, "inventory", "discover")
-        return base_path
+        return BasePath.manage_fabrics(self.fabric_name, "inventory", "discover")
 
     @property
     def verb(self) -> str:

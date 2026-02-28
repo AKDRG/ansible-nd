@@ -24,16 +24,16 @@ import logging
 import time
 from typing import Any, Dict, List, Optional
 
-from ansible_collections.cisco.nd.plugins.module_utils.ep.ep_api_v1_manage_fabric_config import (
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_fabric_config import (
     EpManageFabricConfigDeploy,
     EpManageFabricConfigSave,
     EpManageFabricGet,
     EpManageFabricInventoryDiscover,
 )
-from ansible_collections.cisco.nd.plugins.module_utils.ep.ep_api_v1_manage_fabric_switches import (
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_fabric_switches import (
     EpManageFabricSwitchesGet,
 )
-from ansible_collections.cisco.nd.plugins.module_utils.ep.ep_api_v1_manage_fabric_switch_actions import (
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_fabric_switch_actions import (
     EpManageFabricSwitchActionsRediscover,
 )
 

@@ -53,6 +53,70 @@ from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_switches 
     SwitchesEndpointParams,
 )
 
+# Fabric Config endpoints
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_fabric_config import (
+    EpManageFabricConfigDeploy,
+    EpManageFabricConfigSave,
+    EpManageFabricGet,
+    EpManageFabricInventoryDiscover,
+)
+
+# Fabric Switches endpoints
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_fabric_switches import (
+    EpManageFabricSwitchDelete,
+    EpManageFabricSwitchesAdd,
+    EpManageFabricSwitchesGet,
+    EpManageFabricSwitchesSummary,
+    EpManageFabricSwitchGet,
+    EpManageFabricSwitchUpdateRole,
+)
+
+# Fabric Switch Actions endpoints
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_fabric_switch_actions import (
+    EpManageFabricSwitchActionsChangeRoles,
+    EpManageFabricSwitchActionsImportBootstrap,
+    EpManageFabricSwitchActionsPreProvision,
+    EpManageFabricSwitchActionsRediscover,
+    EpManageFabricSwitchActionsRediscoverInterfaces,
+    EpManageFabricSwitchActionsReload,
+    EpManageFabricSwitchActionsRemove,
+    EpManageFabricSwitchChangeSerialNumber,
+    EpManageFabricSwitchInterfaceGet,
+    EpManageFabricSwitchInterfacesGet,
+    EpManageFabricSwitchProvisionRMA,
+)
+
+# Fabric Discovery endpoints
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_fabric_discovery import (
+    EpManageFabricShallowDiscovery,
+)
+
+# Fabric Bootstrap endpoints
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_fabric_bootstrap import (
+    EpManageFabricBootstrapGet,
+)
+
+# Credentials endpoints
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_credentials import (
+    EpManageCredentialsSwitchesCreate,
+    EpManageCredentialsSwitchesGet,
+    EpManageCredentialsSwitchesRemove,
+    EpManageCredentialsSwitchValidate,
+)
+
+# Inventory endpoints
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.ep_manage_inventory import (
+    EpManageFabricInventorySummary,
+    EpManageInventorySwitchActionsCopyRunStart,
+    EpManageInventorySwitchActionsDeploy,
+    EpManageInventorySwitchActionsPreview,
+    EpManageInventorySwitchActionsRediscover,
+    EpManageInventorySwitchActionsRemove,
+    EpManageInventorySwitchesGet,
+    EpManageInventorySwitchesLicenses,
+    EpManageInventorySwitchesSummary,
+)
+
 __all__ = [
     # BasePath helpers
     "BasePathInfra",
@@ -70,4 +134,47 @@ __all__ = [
     # Manage Switches endpoints
     "EpManageSwitchesGet",
     "SwitchesEndpointParams",
+    # Fabric Config endpoints
+    "EpManageFabricConfigSave",
+    "EpManageFabricConfigDeploy",
+    "EpManageFabricGet",
+    "EpManageFabricInventoryDiscover",
+    # Fabric Switches endpoints
+    "EpManageFabricSwitchesGet",
+    "EpManageFabricSwitchesAdd",
+    "EpManageFabricSwitchGet",
+    "EpManageFabricSwitchDelete",
+    "EpManageFabricSwitchesSummary",
+    "EpManageFabricSwitchUpdateRole",
+    # Fabric Switch Actions endpoints
+    "EpManageFabricSwitchActionsRediscover",
+    "EpManageFabricSwitchActionsRediscoverInterfaces",
+    "EpManageFabricSwitchActionsReload",
+    "EpManageFabricSwitchActionsRemove",
+    "EpManageFabricSwitchActionsChangeRoles",
+    "EpManageFabricSwitchActionsImportBootstrap",
+    "EpManageFabricSwitchActionsPreProvision",
+    "EpManageFabricSwitchProvisionRMA",
+    "EpManageFabricSwitchChangeSerialNumber",
+    "EpManageFabricSwitchInterfacesGet",
+    "EpManageFabricSwitchInterfaceGet",
+    # Fabric Discovery endpoints
+    "EpManageFabricShallowDiscovery",
+    # Fabric Bootstrap endpoints
+    "EpManageFabricBootstrapGet",
+    # Credentials endpoints
+    "EpManageCredentialsSwitchesGet",
+    "EpManageCredentialsSwitchesCreate",
+    "EpManageCredentialsSwitchesRemove",
+    "EpManageCredentialsSwitchValidate",
+    # Inventory endpoints
+    "EpManageInventorySwitchesGet",
+    "EpManageInventorySwitchesSummary",
+    "EpManageInventorySwitchesLicenses",
+    "EpManageFabricInventorySummary",
+    "EpManageInventorySwitchActionsRediscover",
+    "EpManageInventorySwitchActionsRemove",
+    "EpManageInventorySwitchActionsDeploy",
+    "EpManageInventorySwitchActionsPreview",
+    "EpManageInventorySwitchActionsCopyRunStart",
 ]

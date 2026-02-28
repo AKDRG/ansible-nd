@@ -15,23 +15,26 @@ Endpoints covered:
 - Get a specific switch
 - Delete a specific switch
 - Get switches summary
+- Update switch role
 """
 
-from __future__ import absolute_import, division, print_function
+from __future__ import absolute_import, annotations, division, print_function
 
-__metaclass__ = type  # pylint: disable=invalid-name
+# pylint: disable=invalid-name
+__metaclass__ = type
 __author__ = "Akshayanat C S"
+# pylint: enable=invalid-name
 
 from typing import Literal
 
 from ansible_collections.cisco.nd.plugins.module_utils.enums import HttpVerbEnum
-from ansible_collections.cisco.nd.plugins.module_utils.ep.base_paths_manage import BasePath
 from ansible_collections.cisco.nd.plugins.module_utils.ep.endpoint_mixins import FabricNameMixin, SwitchIdMixin
 from ansible_collections.cisco.nd.plugins.module_utils.ep.endpoint_query_params import (
     FabricSwitchesQueryParams,
     ManageSwitchAddQueryParams,
     SwitchDeleteQueryParams,
 )
+from ansible_collections.cisco.nd.plugins.module_utils.ep.v1.base_paths_manage import BasePath
 from ansible_collections.cisco.nd.plugins.module_utils.pydantic_compat import BaseModel, ConfigDict, Field
 
 # Common config for basic validation
