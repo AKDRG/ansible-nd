@@ -4,20 +4,16 @@
 
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
-"""
-Switch Utility Classes for ND Switch Resource Module.
+"""Switch Utility Classes for ND Switch Resource Module.
 
-This module provides utility classes for:
-- Building simple API payloads (PayloadUtils)
-- Fabric-level operations like save/deploy (FabricUtils)
-- Waiting for switch operations to complete (SwitchWaitUtils)
+Provides:
+    - ``SwitchOperationError`` – Exception for switch operation failures.
+    - ``PayloadUtils``         – Simple API payload builders.
+    - ``FabricUtils``          – Fabric-level config save / deploy / info.
+    - ``SwitchWaitUtils``      – Multi-phase wait for switch manageability.
 
-Note: Most payload building is now handled by schema models in
-switch_inventory_models.py with their to_payload() methods:
-- ShallowDiscoveryRequestModel for discovery
-- AddSwitchesRequestModel for adding switches
-- BootstrapImportSwitchModel / ImportBootstrapSwitchesRequestModel for POAP
-- RMASwitchModel for RMA operations
+Most complex payloads (discovery, add, POAP, RMA) are built by schema models
+in ``switch_inventory_models.py`` via their ``to_payload()`` methods.
 """
 
 from __future__ import absolute_import, division, print_function
@@ -26,11 +22,11 @@ __metaclass__ = type
 
 import logging
 import time
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 from ansible_collections.cisco.nd.plugins.module_utils.ep.ep_api_v1_manage_fabric_config import (
-    EpManageFabricConfigSave,
     EpManageFabricConfigDeploy,
+    EpManageFabricConfigSave,
     EpManageFabricGet,
     EpManageFabricInventoryDiscover,
 )
@@ -42,564 +38,649 @@ from ansible_collections.cisco.nd.plugins.module_utils.ep.ep_api_v1_manage_fabri
 )
 
 
+# =========================================================================
+# Exceptions
+# =========================================================================
+
+
 class SwitchOperationError(Exception):
-    """Exception raised for switch operation failures."""
-    pass
+    """Raised when a switch operation fails."""
+
+
+# =========================================================================
+# PayloadUtils
+# =========================================================================
 
 
 class PayloadUtils:
+    """Build simple, dict-based API payloads.
+
+    Complex payloads (discovery, add, POAP, RMA) are handled by
+    schema models in ``switch_inventory_models.py``.
     """
-    Utility class for building simple API payloads.
-    
-    Note: Complex payloads for discovery, add, POAP, and RMA operations
-    are now built using schema models from switch_inventory_models.py.
-    This class retains only credential and simple list-based payloads.
-    """
-    
+
     def __init__(self, logger: Optional[logging.Logger] = None):
         self.log = logger or logging.getLogger("nd.PayloadUtils")
-    
+
     def build_credentials_payload(
         self,
         serial_numbers: List[str],
         username: str,
-        password: str
+        password: str,
     ) -> Dict[str, Any]:
-        """
-        Build payload for saving switch credentials.
-        
+        """Build payload for saving switch credentials.
+
         Args:
-            serial_numbers: List of switch serial numbers
-            username: Switch username
-            password: Switch password
-            
+            serial_numbers: Switch serial numbers.
+            username:       Switch username.
+            password:       Switch password.
+
         Returns:
-            Credentials API payload
+            Credentials API payload dict.
         """
         return {
             "switchIds": serial_numbers,
             "username": username,
             "password": password,
         }
-    
-    def build_switch_ids_payload(self, serial_numbers: List[str]) -> Dict[str, Any]:
-        """
-        Build payload with switch IDs for remove/batch operations.
-        
+
+    def build_switch_ids_payload(
+        self,
+        serial_numbers: List[str],
+    ) -> Dict[str, Any]:
+        """Build payload with switch IDs for remove / batch operations.
+
         Args:
-            serial_numbers: List of switch serial numbers
-            
+            serial_numbers: Switch serial numbers.
+
         Returns:
-            Switch IDs payload
+            ``{"switchIds": [...]}`` payload dict.
         """
-        return {
-            "switchIds": serial_numbers
-        }
+        return {"switchIds": serial_numbers}
+
+
+# =========================================================================
+# FabricUtils
+# =========================================================================
 
 
 class FabricUtils:
-    """
-    Utility class for fabric-level operations.
-    """
-    
-    def __init__(self, nd_module, fabric: str, logger: Optional[logging.Logger] = None):
-        """
-        Initialize FabricUtils.
-        
+    """Fabric-level operations: config save, deploy, and info retrieval."""
+
+    def __init__(
+        self,
+        nd_module,
+        fabric: str,
+        logger: Optional[logging.Logger] = None,
+    ):
+        """Initialize FabricUtils.
+
         Args:
-            nd_module: NDModule or NDNetworkResourceModule instance
-            fabric: Fabric name
-            logger: Optional logger instance
+            nd_module: NDModule or NDNetworkResourceModule instance.
+            fabric:    Fabric name.
+            logger:    Optional logger; defaults to ``nd.FabricUtils``.
         """
         self.nd = nd_module
         self.fabric = fabric
         self.log = logger or logging.getLogger("nd.FabricUtils")
-        
-        # Initialize endpoint instances
+
+        # Pre-configure endpoints
         self.ep_config_save = EpManageFabricConfigSave()
         self.ep_config_save.fabric_name = fabric
-        
+
         self.ep_config_deploy = EpManageFabricConfigDeploy()
         self.ep_config_deploy.fabric_name = fabric
-        
+
         self.ep_fabric_get = EpManageFabricGet()
         self.ep_fabric_get.fabric_name = fabric
-    
-    def save_config(self) -> Dict[str, Any]:
-        """
-        Save (recalculate) fabric configuration.
-        
-        Returns:
-            API response
-        """
-        self.log.info(f"Saving configuration for fabric: {self.fabric}")
-        
-        try:
-            response = self.nd.request(self.ep_config_save.path, verb=self.ep_config_save.verb)
-            self.log.info(f"Config save completed for fabric: {self.fabric}")
-            return response
-        except Exception as e:
-            self.log.error(f"Config save failed for fabric {self.fabric}: {e}")
-            raise SwitchOperationError(f"Failed to save config for fabric {self.fabric}: {e}")
-    
-    def deploy_config(self) -> Dict[str, Any]:
-        """
-        Deploy pending configuration to switches in the fabric.
 
-        The configDeploy endpoint does not require a request body;
-        it deploys all pending changes for the fabric.
-            
+    # -----------------------------------------------------------------
+    # Public API
+    # -----------------------------------------------------------------
+
+    def save_config(self) -> Dict[str, Any]:
+        """Save (recalculate) fabric configuration.
+
         Returns:
-            API response
+            API response dict.
+
+        Raises:
+            SwitchOperationError: If the save request fails.
         """
-        self.log.info(f"Deploying config for fabric: {self.fabric}")
-        
-        try:
-            response = self.nd.request(self.ep_config_deploy.path, verb=self.ep_config_deploy.verb)
-            self.log.info(f"Config deploy initiated for fabric: {self.fabric}")
-            return response
-        except Exception as e:
-            self.log.error(f"Config deploy failed: {e}")
-            raise SwitchOperationError(f"Failed to deploy config: {e}")
-    
+        return self._request_endpoint(
+            self.ep_config_save, action="Config save"
+        )
+
+    def deploy_config(self) -> Dict[str, Any]:
+        """Deploy pending configuration to all switches in the fabric.
+
+        The ``configDeploy`` endpoint requires no request body; it deploys
+        all pending changes for the fabric.
+
+        Returns:
+            API response dict.
+
+        Raises:
+            SwitchOperationError: If the deploy request fails.
+        """
+        return self._request_endpoint(
+            self.ep_config_deploy, action="Config deploy"
+        )
+
     def get_fabric_info(self) -> Dict[str, Any]:
-        """
-        Get fabric information.
-        
+        """Retrieve fabric information.
+
         Returns:
-            Fabric information dictionary
+            Fabric information dict.
+
+        Raises:
+            SwitchOperationError: If the request fails.
         """
+        return self._request_endpoint(
+            self.ep_fabric_get, action="Get fabric info"
+        )
+
+    # -----------------------------------------------------------------
+    # Internal helpers
+    # -----------------------------------------------------------------
+
+    def _request_endpoint(self, endpoint, action: str = "Request") -> Dict[str, Any]:
+        """Execute a request against a pre-configured endpoint.
+
+        Centralises the try / log / raise pattern shared by every public
+        method so each method remains a one-liner.
+
+        Args:
+            endpoint: Endpoint object with ``.path`` and ``.verb``.
+            action:   Human-readable label for log messages.
+
+        Returns:
+            API response dict.
+
+        Raises:
+            SwitchOperationError: On any request failure.
+        """
+        self.log.info(f"{action} for fabric: {self.fabric}")
         try:
-            response = self.nd.request(self.ep_fabric_get.path, verb=self.ep_fabric_get.verb)
+            response = self.nd.request(endpoint.path, verb=endpoint.verb)
+            self.log.info(f"{action} completed for fabric: {self.fabric}")
             return response
         except Exception as e:
-            self.log.error(f"Failed to get fabric info: {e}")
-            raise SwitchOperationError(f"Failed to get fabric info: {e}")
+            self.log.error(f"{action} failed for fabric {self.fabric}: {e}")
+            raise SwitchOperationError(
+                f"{action} failed for fabric {self.fabric}: {e}"
+            ) from e
+
+
+# =========================================================================
+# SwitchWaitUtils
+# =========================================================================
 
 
 class SwitchWaitUtils:
+    """Multi-phase wait utilities for switch lifecycle operations.
+
+    Status constants align with schema enums in
+    ``switch_inventory_models.py``:
+        - ``DiscoveryStatus``         – ok, unreachable, timeout, …
+        - ``ShallowDiscoveryStatus``  – manageable, notReacheable, …
     """
-    Utility class for waiting on switch operations to complete.
-    
-    Status values align with schema enums:
-    - DiscoveryStatus from switch_inventory_models.py
-    - ShallowDiscoveryStatus from switch_inventory_models.py
-    """
-    
+
     # Default wait parameters
-    DEFAULT_MAX_ATTEMPTS = 60
-    DEFAULT_WAIT_INTERVAL = 10  # seconds
-    
-    # Status values indicating switch is ready
-    # Maps to DiscoveryStatus.OK and ShallowDiscoveryStatus.MANAGEABLE
-    MANAGEABLE_STATUSES = ["ok", "manageable"]
-    
-    # Status values indicating operation is in progress
-    # Maps to DiscoveryStatus: DISCOVERING, REDISCOVERING
-    # Maps to SystemMode: MIGRATION
-    IN_PROGRESS_STATUSES = ["inProgress", "migration", "discovering", "rediscovering"]
-    
+    DEFAULT_MAX_ATTEMPTS: int = 300
+    DEFAULT_WAIT_INTERVAL: int = 5  # seconds
+
+    # Status values indicating the switch is ready
+    MANAGEABLE_STATUSES = frozenset({"ok", "manageable"})
+
+    # Status values indicating an operation is still in progress
+    IN_PROGRESS_STATUSES = frozenset({
+        "inProgress", "migration", "discovering", "rediscovering",
+    })
+
     # Status values indicating failure
-    # Maps to DiscoveryStatus: UNREACHABLE, DISCOVERY_TIMEOUT, TIMEOUT, etc.
-    # Maps to ShallowDiscoveryStatus: NOT_REACHABLE, NOT_AUTHORIZED
-    FAILED_STATUSES = [
-        "failed", 
-        "unreachable", 
-        "authenticationFailed", 
+    FAILED_STATUSES = frozenset({
+        "failed",
+        "unreachable",
+        "authenticationFailed",
         "timeout",
         "discoveryTimeout",
-        "notReacheable",  # Note: typo matches API spec
+        "notReacheable",       # Note: typo matches the API spec
         "notAuthorized",
         "unknownUserPassword",
         "connectionError",
         "sshSessionError",
-    ]
-    
+    })
+
+    # Sleep multipliers for each phase
+    _MIGRATION_SLEEP_FACTOR: float = 2.0
+    _REDISCOVERY_SLEEP_FACTOR: float = 3.5
+
     def __init__(
         self,
         nd_module,
         fabric: str,
         logger: Optional[logging.Logger] = None,
         max_attempts: Optional[int] = None,
-        wait_interval: Optional[int] = None
+        wait_interval: Optional[int] = None,
+        fabric_utils: Optional["FabricUtils"] = None,
     ):
-        """
-        Initialize SwitchWaitUtils.
-        
+        """Initialize SwitchWaitUtils.
+
         Args:
-            nd_module: NDModule or NDNetworkResourceModule instance
-            fabric: Fabric name
-            logger: Optional logger instance
-            max_attempts: Maximum number of status check attempts
-            wait_interval: Seconds to wait between attempts
+            nd_module:     Parent module instance (must expose ``.nd``).
+            fabric:        Fabric name.
+            logger:        Optional logger; defaults to ``nd.SwitchWaitUtils``.
+            max_attempts:  Max polling iterations (default ``300``).
+            wait_interval: Seconds between polls (default ``5``).
+            fabric_utils:  Injected ``FabricUtils`` for greenfield check
+                           (Dependency Inversion). Created internally if
+                           not provided.
         """
         self.nd = nd_module.nd
         self.fabric = fabric
         self.log = logger or logging.getLogger("nd.SwitchWaitUtils")
         self.max_attempts = max_attempts or self.DEFAULT_MAX_ATTEMPTS
         self.wait_interval = wait_interval or self.DEFAULT_WAIT_INTERVAL
-        
-        # Initialize endpoint instances
+        self.fabric_utils = fabric_utils or FabricUtils(nd_module, fabric, self.log)
+
+        # Pre-configure endpoints
         self.ep_switches_get = EpManageFabricSwitchesGet()
         self.ep_switches_get.fabric_name = fabric
-        
+
         self.ep_inventory_discover = EpManageFabricInventoryDiscover()
         self.ep_inventory_discover.fabric_name = fabric
-        
+
         self.ep_rediscover = EpManageFabricSwitchActionsRediscover()
         self.ep_rediscover.fabric_name = fabric
-        
-        # Cache fabric details for greenfield flag
-        self._fabric_details: Optional[Dict[str, Any]] = None
+
+        # Cached greenfield flag
         self._greenfield_debug_enabled: Optional[bool] = None
-    
+
+    # =====================================================================
+    # Public API – Wait Methods
+    # =====================================================================
+
     def wait_for_switch_manageable(
         self,
-        serial_numbers: List[str]
+        serial_numbers: List[str],
     ) -> bool:
-        """
-        Wait for switches to exit migration mode and become manageable.
-        
-        This method implements a multi-phase waiting strategy:
-        1. Wait for switches to exit "migration" system mode
-        2. Wait for switches to enter "normal" system mode
-        3. Check greenfield debug flag - if enabled, skip reload detection
-        4. If greenfield disabled, wait for discovery status transitions:
-           - First wait for "unreachable" (indicates reload)
-           - Then wait for "ok" (indicates ready)
-        
+        """Wait for switches to exit migration mode and become manageable.
+
+        Implements a multi-phase strategy:
+            1. Wait for all switches to **exit** ``migration`` system mode.
+            2. Wait for all switches to **enter** ``normal`` system mode.
+            3. If the greenfield debug flag is enabled, return immediately.
+            4. Wait for discovery status ``unreachable`` (indicates reload).
+            5. Trigger rediscovery, then wait for discovery status ``ok``.
+
         Args:
-            serial_numbers: List of switch serial numbers to wait for
-            
+            serial_numbers: Switch serial numbers to monitor.
+
         Returns:
-            True if all switches are manageable, False otherwise
+            ``True`` if all switches are manageable, ``False`` on timeout.
         """
-        attempts = 300  # Match nd_manage_switches default
-        interval = 5   # Match nd_manage_switches default
-        
-        self.log.info(f"Waiting for switches to exit migration mode and become manageable: {serial_numbers}")
-        
-        attempt = 1
-        pending_switches = serial_numbers.copy()
-        switch_state = "unreachable"
-        check_migration = True
-        migration_mode = "migration"
-        switches_in_migration = serial_numbers.copy()
-        
-        while attempt <= attempts and pending_switches and switch_state:
-            self.log.debug(f"Checking switch migration status - attempt {attempt}/{attempts}")
-            
-            # Get current switch data
-            try:
-                response = self.nd.request(self.ep_switches_get.path, verb=self.ep_switches_get.verb)
-                switch_data = response.get("switches", [])
-            except Exception as e:
-                self.log.error(f"Failed to get switch data: {e}")
-                return False
-            
-            if not switch_data:
-                self.log.error("No switch data found for fabric")
-                return False
-            
-            # Phase 1 & 2: Check migration mode (migration → normal)
-            if check_migration:
-                self.log.debug(f"Switches still in migration mode: {switches_in_migration}, mode: {migration_mode}")
+        self.log.info(
+            f"Waiting for switches to become manageable: {serial_numbers}"
+        )
 
-                if switches_in_migration:
-                    if migration_mode != "normal":
-                        switches_in_migration = self._check_migration_mode(switches_in_migration, switch_data, migration_mode)
-                    else:
-                        switches_in_migration = self._check_mode(switches_in_migration, switch_data, migration_mode)
+        # Phase 1 + 2: migration → normal
+        if not self._wait_for_system_mode(serial_numbers):
+            return False
 
-                    time.sleep(interval * 2)  # Wait longer during migration
-                    attempt += 1
-                    continue
-                else:
-                    if migration_mode == "migration":
-                        self.log.info("All switches exited migration mode, now checking for normal mode")
-                        # Switches exited migration, now check normal mode
-                        migration_mode = "normal"
-                        switches_in_migration = serial_numbers.copy()
-                        self.log.debug(f"Switches exited migration mode, checking normal mode: {switches_in_migration}")
-                    else:
-                        self.log.info("All switches in normal system mode, now checking discovery status")
-                        check_migration = False  # Proceed to discovery status checks
+        # Phase 3: greenfield shortcut
+        if self._is_greenfield_debug_enabled():
+            self.log.info(
+                "Greenfield debug flag enabled — skipping reload detection"
+            )
+            return True
 
-                        # Phase 3: Check greenfield debug flag
-                        if self._get_greenfield_debug_flag():
-                            self.log.info("Greenfield debug flag enabled, skipping reload detection")
-                            return True
+        # Phase 4: wait for "unreachable" (switch is reloading)
+        if not self._wait_for_discovery_state(serial_numbers, "unreachable"):
+            return False
 
-            # Phase 4: Discovery status checks (unreachable → ok)
-            pending_switches = self._check_switches_state(pending_switches, switch_data, switch_state)
+        # Phase 5: wait for "ok" (switch is ready)
+        return self._wait_for_discovery_state(serial_numbers, "ok")
 
-            if pending_switches:
-                # Trigger rediscovery for pending switches
-                self._trigger_rediscovery(pending_switches)
-                self.log.info(f"Switches still pending: {pending_switches}, waiting...")
-                time.sleep(interval * 3.5)  # Wait longer after rediscovery
-            else:
-                if switch_state == "ok":
-                    # All switches reached "ok" state
-                    self.log.info("All switches are now manageable")
-                    return True
-                # All switches reached "unreachable", now wait for "ok"
-                pending_switches = serial_numbers.copy()
-                switch_state = "ok"
-                self.log.debug("Switches detected as unreachable, now waiting for ok state")
-            
-            attempt += 1
-        
-        self.log.warning(f"Timeout waiting for switches: {serial_numbers}")
-        return False
-    
     def wait_for_discovery(
         self,
         seed_ip: str,
         max_attempts: Optional[int] = None,
-        wait_interval: Optional[int] = None
+        wait_interval: Optional[int] = None,
     ) -> Optional[Dict[str, Any]]:
-        """
-        Wait for switch discovery to complete.
-        
+        """Poll until a single switch discovery completes.
+
         Args:
-            seed_ip: IP address of switch being discovered
-            max_attempts: Override max attempts
-            wait_interval: Override wait interval
-            
+            seed_ip:       IP address of the switch being discovered.
+            max_attempts:  Override max attempts (default ``30``).
+            wait_interval: Override interval in seconds (default ``5``).
+
         Returns:
-            Discovery response data if successful, None otherwise
+            Discovery data dict on success, ``None`` on failure or timeout.
         """
-        attempts = max_attempts or 30  # Discovery is usually faster
-        interval = wait_interval or 5
-        
+        attempts = max_attempts or 30
+        interval = wait_interval or self.wait_interval
+
         self.log.info(f"Waiting for discovery of: {seed_ip}")
-        
+
         for attempt in range(attempts):
-            discovery_status = self._get_discovery_status(seed_ip)
-            
-            if discovery_status and discovery_status.get("status") in self.MANAGEABLE_STATUSES:
+            status = self._get_discovery_status(seed_ip)
+
+            if status and status.get("status") in self.MANAGEABLE_STATUSES:
                 self.log.info(f"Discovery completed for {seed_ip}")
-                return discovery_status
-            
-            if discovery_status and discovery_status.get("status") in self.FAILED_STATUSES:
-                self.log.error(f"Discovery failed for {seed_ip}: {discovery_status}")
+                return status
+
+            if status and status.get("status") in self.FAILED_STATUSES:
+                self.log.error(f"Discovery failed for {seed_ip}: {status}")
                 return None
-            
-            self.log.debug(f"Discovery attempt {attempt + 1}/{attempts} for {seed_ip}")
+
+            self.log.debug(
+                f"Discovery attempt {attempt + 1}/{attempts} for {seed_ip}"
+            )
             time.sleep(interval)
-        
+
         self.log.warning(f"Discovery timeout for {seed_ip}")
         return None
-    
-    def _check_migration_mode(
-        self,
-        serial_numbers: List[str],
-        switch_data: List[Dict[str, Any]],
-        required_mode: str
-    ) -> List[str]:
-        """
-        Check if switches are still in specified system mode.
-        
-        Args:
-            serial_numbers: List of switch serial numbers to check
-            switch_data: Switch data from API response
-            required_mode: Expected mode ('migration' or 'normal')
-            
-        Returns:
-            List of switches still in the required mode
-        """
-        remaining_switches = []
-        
-        for sn in serial_numbers:
-            for switch in switch_data:
-                if switch.get("serialNumber") == sn:
-                    additional = switch.get("additionalData", {})
-                    mode = additional.get("systemMode", "").lower()
-                    
-                    if mode == required_mode:
-                        remaining_switches.append(sn)
-                        self.log.debug(f"Switch {sn} still in {required_mode} mode")
-                    break
-        
-        return remaining_switches
 
-    def _check_mode(
+    # =====================================================================
+    # Phase Helpers – System Mode
+    # =====================================================================
+
+    def _wait_for_system_mode(self, serial_numbers: List[str]) -> bool:
+        """Wait for switches to transition: migration → normal.
+
+        Returns ``True`` when all switches are in ``normal`` mode,
+        ``False`` on timeout or API failure.
+        """
+        # Sub-phase A: exit "migration" mode
+        pending = self._poll_system_mode(
+            serial_numbers, target_mode="migration", expect_match=True
+        )
+        if pending is None:
+            return False
+
+        # Sub-phase B: enter "normal" mode
+        pending = self._poll_system_mode(
+            serial_numbers, target_mode="normal", expect_match=False
+        )
+        if pending is None:
+            return False
+
+        self.log.info(
+            "All switches in normal system mode — proceeding to discovery checks"
+        )
+        return True
+
+    def _poll_system_mode(
         self,
         serial_numbers: List[str],
-        switch_data: List[Dict[str, Any]],
-        required_mode: str
-    ) -> List[str]:
-        """
-        Check if switches are still in specified system mode.
-        
+        target_mode: str,
+        expect_match: bool,
+    ) -> Optional[List[str]]:
+        """Poll until no switches remain in (or outside) ``target_mode``.
+
         Args:
-            serial_numbers: List of switch serial numbers to check
-            switch_data: Switch data from API response
-            required_mode: Expected mode ('migration' or 'normal')
-            
+            serial_numbers: Switches to check.
+            target_mode:    System mode string (e.g. ``"migration"``).
+            expect_match:   If ``True``, wait for switches to **leave**
+                            ``target_mode``.  If ``False``, wait for
+                            switches to **enter** ``target_mode``.
+
         Returns:
-            List of switches not in the required mode
+            Empty list on success, ``None`` on timeout / API error.
         """
-        remaining_switches = []
-        
-        for sn in serial_numbers:
-            for switch in switch_data:
-                if switch.get("serialNumber") == sn:
-                    additional = switch.get("additionalData", {})
-                    mode = additional.get("systemMode", "").lower()
-                    
-                    if mode != required_mode:
-                        remaining_switches.append(sn)
-                        self.log.debug(f"Switch {sn} still in {required_mode} mode")
-                    break
-        
-        return remaining_switches
-    
-    def _check_switches_state(
-        self,
+        pending = list(serial_numbers)
+        label = f"exit '{target_mode}'" if expect_match else f"enter '{target_mode}'"
+
+        for attempt in range(1, self.max_attempts + 1):
+            if not pending:
+                return pending
+
+            switch_data = self._fetch_switch_data()
+            if switch_data is None:
+                return None
+
+            remaining = self._filter_by_system_mode(
+                pending, switch_data, target_mode, expect_match
+            )
+
+            if not remaining:
+                self.log.info(f"All switches {label} mode (attempt {attempt})")
+                return remaining
+
+            pending = remaining
+            self.log.debug(
+                f"Attempt {attempt}/{self.max_attempts}: "
+                f"{len(pending)} switch(es) waiting to {label}: {pending}"
+            )
+            time.sleep(self.wait_interval * self._MIGRATION_SLEEP_FACTOR)
+
+        self.log.warning(
+            f"Timeout waiting for switches to {label}: {pending}"
+        )
+        return None
+
+    # =====================================================================
+    # Filtering (static, pure-logic helpers)
+    # =====================================================================
+
+    @staticmethod
+    def _filter_by_system_mode(
         serial_numbers: List[str],
         switch_data: List[Dict[str, Any]],
-        target_state: str
+        target_mode: str,
+        expect_match: bool,
     ) -> List[str]:
-        """
-        Check if switches have reached the target discovery state.
-        
+        """Return serial numbers that have NOT yet satisfied the mode check.
+
         Args:
-            serial_numbers: List of switch serial numbers to check
-            switch_data: Switch data from API response
-            target_state: Target discovery status (e.g., 'unreachable', 'ok')
-            
+            serial_numbers: Switches to inspect.
+            switch_data:    Raw switch dicts from the GET API.
+            target_mode:    e.g. ``"migration"`` or ``"normal"``.
+            expect_match:   ``True`` → switch must *leave* target_mode to pass.
+                            ``False`` → switch must *enter* target_mode to pass.
+
         Returns:
-            List of switches that have NOT yet reached target state
+            Serial numbers still waiting.
         """
-        remaining_switches = []
-        
+        switch_index = {
+            sw.get("serialNumber"): sw for sw in switch_data
+        }
+        remaining: List[str] = []
         for sn in serial_numbers:
-            switch_found = False
-            self.log.debug(f"Checking switch {sn} for state {target_state}")
-            
-            for switch in switch_data:
-                if switch.get("serialNumber") == sn:
-                    additional = switch.get("additionalData", {})
-                    discovery_status = additional.get("discoveryStatus", "").lower()
-                    self.log.debug(f"Switch {sn} discovery status: {discovery_status}")
-                    switch_found = True
-                    
-                    if discovery_status == target_state:
-                        self.log.info(f"Switch {sn} reached {target_state} state")
-                    else:
-                        remaining_switches.append(sn)
-                    break
-            
-            if not switch_found:
-                remaining_switches.append(sn)
-        
-        return remaining_switches
-    
+            sw = switch_index.get(sn)
+            if sw is None:
+                remaining.append(sn)
+                continue
+            mode = (
+                sw.get("additionalData", {})
+                .get("systemMode", "")
+                .lower()
+            )
+            # expect_match=True:  "still in target_mode" → not done yet
+            # expect_match=False: "not yet in target_mode" → not done yet
+            still_waiting = (mode == target_mode) if expect_match else (mode != target_mode)
+            if still_waiting:
+                remaining.append(sn)
+        return remaining
+
+    @staticmethod
+    def _filter_by_discovery_status(
+        serial_numbers: List[str],
+        switch_data: List[Dict[str, Any]],
+        target_state: str,
+    ) -> List[str]:
+        """Return serial numbers that have NOT yet reached ``target_state``.
+
+        Args:
+            serial_numbers: Switches to inspect.
+            switch_data:    Raw switch dicts from the GET API.
+            target_state:   e.g. ``"unreachable"`` or ``"ok"``.
+
+        Returns:
+            Serial numbers still waiting.
+        """
+        switch_index = {
+            sw.get("serialNumber"): sw for sw in switch_data
+        }
+        remaining: List[str] = []
+        for sn in serial_numbers:
+            sw = switch_index.get(sn)
+            if sw is None:
+                remaining.append(sn)
+                continue
+            status = (
+                sw.get("additionalData", {})
+                .get("discoveryStatus", "")
+                .lower()
+            )
+            if status != target_state:
+                remaining.append(sn)
+        return remaining
+
+    # =====================================================================
+    # Phase Helpers – Discovery Status
+    # =====================================================================
+
+    def _wait_for_discovery_state(
+        self,
+        serial_numbers: List[str],
+        target_state: str,
+    ) -> bool:
+        """Poll until all switches reach ``target_state`` discovery status.
+
+        Triggers rediscovery on each iteration for switches that have not
+        yet reached the target.
+
+        Returns:
+            ``True`` when all switches reach ``target_state``,
+            ``False`` on timeout.
+        """
+        pending = list(serial_numbers)
+
+        for attempt in range(1, self.max_attempts + 1):
+            if not pending:
+                return True
+
+            switch_data = self._fetch_switch_data()
+            if switch_data is None:
+                return False
+
+            pending = self._filter_by_discovery_status(
+                pending, switch_data, target_state
+            )
+
+            if not pending:
+                self.log.info(
+                    f"All switches reached '{target_state}' state "
+                    f"(attempt {attempt})"
+                )
+                return True
+
+            self._trigger_rediscovery(pending)
+            self.log.debug(
+                f"Attempt {attempt}/{self.max_attempts}: "
+                f"{len(pending)} switch(es) not yet '{target_state}': {pending}"
+            )
+            time.sleep(self.wait_interval * self._REDISCOVERY_SLEEP_FACTOR)
+
+        self.log.warning(
+            f"Timeout waiting for '{target_state}' state: {serial_numbers}"
+        )
+        return False
+
+    # =====================================================================
+    # API Helpers
+    # =====================================================================
+
+    def _fetch_switch_data(self) -> Optional[List[Dict[str, Any]]]:
+        """GET current switch data for the fabric.
+
+        Returns:
+            List of switch dicts, or ``None`` on failure.
+        """
+        try:
+            response = self.nd.request(
+                self.ep_switches_get.path, verb=self.ep_switches_get.verb
+            )
+            switch_data = response.get("switches", [])
+            if not switch_data:
+                self.log.error("No switch data returned for fabric")
+                return None
+            return switch_data
+        except Exception as e:
+            self.log.error(f"Failed to fetch switch data: {e}")
+            return None
+
     def _trigger_rediscovery(self, serial_numbers: List[str]) -> None:
-        """
-        Trigger rediscovery for specified switches.
-        
+        """POST a rediscovery request for the given switches.
+
         Args:
-            serial_numbers: List of switch serial numbers to rediscover
+            serial_numbers: Switch serial numbers to rediscover.
         """
         if not serial_numbers:
             return
-        
-        self.log.info(f"Triggering rediscovery for switches: {serial_numbers}")
-        
+
         payload = {"switchIds": serial_numbers}
-        
+        self.log.info(f"Triggering rediscovery for: {serial_numbers}")
         try:
-            self.nd.request(self.ep_rediscover.path, verb=self.ep_rediscover.verb, data=payload)
-            self.log.info(f"Rediscovery triggered successfully for switches: {serial_numbers}")
+            self.nd.request(
+                self.ep_rediscover.path,
+                verb=self.ep_rediscover.verb,
+                data=payload,
+            )
         except Exception as e:
             self.log.warning(f"Failed to trigger rediscovery: {e}")
-    
-    def _get_greenfield_debug_flag(self) -> bool:
-        """
-        Check if greenfield debug flag is enabled in fabric.
-        
-        The greenfield debug flag, when enabled, allows skipping reload detection
-        during switch onboarding, significantly speeding up operations in greenfield
-        deployments.
- 
+
+    def _get_discovery_status(
+        self, seed_ip: str,
+    ) -> Optional[Dict[str, Any]]:
+        """GET discovery status for a single switch by IP.
+
+        Args:
+            seed_ip: IP address of the switch.
+
         Returns:
-            True if greenfield debug flag is enabled, False otherwise
+            Switch dict from the discovery API, or ``None``.
+        """
+        try:
+            response = self.nd.request(
+                self.ep_inventory_discover.path,
+                verb=self.ep_inventory_discover.verb,
+            )
+            for switch in response.get("switches", []):
+                if switch.get("ip") == seed_ip or switch.get("ipaddr") == seed_ip:
+                    return switch
+            return None
+        except Exception as e:
+            self.log.debug(f"Discovery status check failed: {e}")
+            return None
+
+    def _is_greenfield_debug_enabled(self) -> bool:
+        """Check whether the fabric has the greenfield debug flag enabled.
+
+        Uses the injected ``FabricUtils`` instance (Dependency Inversion).
+        Result is cached for the lifetime of the instance.
+
+        Returns:
+            ``True`` if the flag is ``"enable"``, ``False`` otherwise.
         """
         if self._greenfield_debug_enabled is not None:
             return self._greenfield_debug_enabled
 
         try:
-            if self._fabric_details is None:
-                # Use FabricUtils to get fabric info
-                fabric_utils = FabricUtils(self.nd, self.fabric, self.log)
-                self._fabric_details = fabric_utils.get_fabric_info()
-
-            greenfield_flag = (
-                self._fabric_details
+            fabric_info = self.fabric_utils.get_fabric_info()
+            self.log.debug(f"Fabric info retrieved for greenfield check: {fabric_info}")
+            flag = (
+                fabric_info
                 .get("management", {})
                 .get("greenfieldDebugFlag", "")
                 .lower()
             )
-
-            if greenfield_flag == "enable":
-                return True
-            return False
-
+            self.log.debug(f"Greenfield debug flag value: '{flag}'")
+            self._greenfield_debug_enabled = flag == "enable"
         except Exception as e:
             self.log.debug(f"Failed to get greenfield debug flag: {e}")
-            return False
-    
-    def _get_switch_statuses(self, serial_numbers: List[str]) -> Dict[str, str]:
-        """
-        Get current status of switches.
-        
-        Args:
-            serial_numbers: List of switch serial numbers
-            
-        Returns:
-            Dictionary mapping serial number to status
-        """
-        try:
-            response = self.nd.request(self.ep_switches_get.path, verb=self.ep_switches_get.verb)
-            switches = response.get("switches", [])
-            
-            statuses = {}
-            for switch in switches:
-                sn = switch.get("serialNumber") or switch.get("switchId")
-                if sn in serial_numbers:
-                    additional = switch.get("additionalData", {})
-                    status = additional.get("discoveryStatus") or switch.get("status", "unknown")
-                    statuses[sn] = status
-            
-            return statuses
-            
-        except Exception as e:
-            self.log.error(f"Failed to get switch statuses: {e}")
-            return {sn: "unknown" for sn in serial_numbers}
-    
-    def _get_discovery_status(self, seed_ip: str) -> Optional[Dict[str, Any]]:
-        """
-        Get discovery status for a switch.
-        
-        Args:
-            seed_ip: IP address of switch
-            
-        Returns:
-            Discovery status data or None
-        """
-        try:
-            response = self.nd.request(self.ep_inventory_discover.path, verb=self.ep_inventory_discover.verb)
-            switches = response.get("switches", [])
-            
-            for switch in switches:
-                if switch.get("ip") == seed_ip or switch.get("ipaddr") == seed_ip:
-                    return switch
-            
-            return None
-            
-        except Exception as e:
-            self.log.debug(f"Discovery status check failed: {e}")
-            return None
+            self._greenfield_debug_enabled = False
+
+        return self._greenfield_debug_enabled
