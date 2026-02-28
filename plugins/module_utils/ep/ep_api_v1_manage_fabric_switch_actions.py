@@ -454,6 +454,93 @@ class EpManageFabricSwitchActionsImportBootstrap(FabricNameMixin, BaseModel):
 
 
 # ============================================================================
+# Pre-Provision Endpoints
+# ============================================================================
+
+
+class EpManageFabricSwitchActionsPreProvision(FabricNameMixin, BaseModel):
+    """
+    # Summary
+
+    Pre-Provision Switches Endpoint
+
+    ## Description
+
+    Endpoint to pre-provision switches in a fabric.  Pre-provisioning
+    allows you to define switch parameters (serial, IP, model, etc.)
+    ahead of time so that when the physical device boots it is
+    automatically absorbed into the fabric.
+
+    ## Path
+
+    - /api/v1/manage/fabrics/{fabricName}/switchActions/preProvision
+
+    ## Verb
+
+    - POST
+
+    ## Usage
+
+    ```python
+    request = EpManageFabricSwitchActionsPreProvision()
+    request.fabric_name = "MyFabric"
+
+    path = request.path
+    verb = request.verb
+    ```
+
+    ## Request Body Example
+
+    ```json
+    {
+        "switches": [
+            {
+                "gatewayIpMask": "10.23.244.1/24",
+                "ip": "10.23.244.10",
+                "imagePolicy": "imagePolicy1",
+                "model": "N9K-C93180YC-FX",
+                "password": "mysecret",
+                "serialNumber": "SAL1948TRTT",
+                "hostname": "leaf1",
+                "username": "admin",
+                "softwareVersion": "10.3(3)",
+                "discoveryAuthProtocol": "md5"
+            }
+        ]
+    }
+    ```
+    """
+
+    model_config = COMMON_CONFIG
+
+    class_name: Literal["EpManageFabricSwitchActionsPreProvision"] = Field(
+        default="EpManageFabricSwitchActionsPreProvision",
+        description="Class name for backward compatibility",
+    )
+    query_params: ManageSwitchAddQueryParams = Field(default_factory=ManageSwitchAddQueryParams)
+
+    @property
+    def path(self) -> str:
+        """Build the endpoint path."""
+        if self.fabric_name is None:
+            raise ValueError("fabric_name must be set before accessing path")
+
+        base_path = BasePath.manage_fabrics(
+            self.fabric_name, "switchActions", "preProvision"
+        )
+
+        query_string = self.query_params.to_query_string()
+        if query_string:
+            return f"{base_path}?{query_string}"
+        return base_path
+
+    @property
+    def verb(self) -> HttpVerbEnum:
+        """Return the HTTP verb for this endpoint."""
+        return HttpVerbEnum.POST
+
+
+# ============================================================================
 # RMA (Return Material Authorization) Endpoints
 # ============================================================================
 

@@ -44,7 +44,7 @@ class EpManageFabricConfigSave(FabricNameMixin, BaseModel):
 
     ## Path
 
-    - /api/v1/manage/fabrics/{fabricName}/config-save
+    - /api/v1/manage/fabrics/{fabricName}/actions/configSave
 
     ## Verb
 
@@ -73,7 +73,7 @@ class EpManageFabricConfigSave(FabricNameMixin, BaseModel):
         if self.fabric_name is None:
             raise ValueError("fabric_name must be set before accessing path")
 
-        base_path = BasePath.manage_fabrics(self.fabric_name, "config-save")
+        base_path = BasePath.manage_fabrics(self.fabric_name, "actions", "configSave")
         return base_path
 
     @property
@@ -94,7 +94,7 @@ class EpManageFabricConfigDeploy(FabricNameMixin, BaseModel):
 
     ## Path
 
-    - /api/v1/manage/fabrics/{fabricName}/config-deploy
+    - /api/v1/manage/fabrics/{fabricName}/actions/configDeploy
 
     ## Verb
 
@@ -134,8 +134,11 @@ class EpManageFabricConfigDeploy(FabricNameMixin, BaseModel):
         if self.fabric_name is None:
             raise ValueError("fabric_name must be set before accessing path")
 
-        base_path = BasePath.manage_fabrics(self.fabric_name, "config-deploy")
-        return f"{base_path}{self.query_params.query_string}"
+        base_path = BasePath.manage_fabrics(self.fabric_name, "actions", "configDeploy")
+        query_string = self.query_params.to_query_string()
+        if query_string:
+            return f"{base_path}?{query_string}"
+        return base_path
 
     @property
     def verb(self) -> str:
