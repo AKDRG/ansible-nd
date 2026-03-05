@@ -304,18 +304,34 @@ class SwitchWaitUtils:
     def wait_for_switch_manageable(
         self,
         serial_numbers: List[str],
+        all_preserve_config: bool = False,
+        skip_greenfield_check: bool = False,
     ) -> bool:
         """Wait for switches to exit migration mode and become manageable.
 
         Implements a multi-phase strategy:
             1. Wait for all switches to **exit** ``migration`` system mode.
             2. Wait for all switches to **enter** ``normal`` system mode.
-            3. If the greenfield debug flag is enabled, return immediately.
-            4. Wait for discovery status ``unreachable`` (indicates reload).
-            5. Trigger rediscovery, then wait for discovery status ``ok``.
+            3. If **all** switches use ``preserve_config=True`` (brownfield),
+               return immediately — brownfield switches do not reload.
+            4. If the greenfield debug flag is enabled **and**
+               ``skip_greenfield_check`` is ``False``, return immediately.
+            5. Wait for discovery status ``unreachable`` (indicates reload).
+            6. Trigger rediscovery, then wait for discovery status ``ok``.
 
         Args:
-            serial_numbers: Switch serial numbers to monitor.
+            serial_numbers:      Switch serial numbers to monitor.
+            all_preserve_config: When ``True``, every switch in the batch is
+                brownfield (``preserve_config=True``).  Brownfield switches
+                keep their running config and **never reload**, so phases
+                5-6 (reload detection) are skipped to avoid a ~25-minute
+                timeout waiting for an ``unreachable`` state that never
+                arrives.  This mirrors the ``all_brownfield_switches``
+                optimisation in the legacy ``dcnm_inventory`` module.
+            skip_greenfield_check: When ``True``, the greenfield debug flag
+                shortcut (phase 4) is bypassed.  Used by POAP bootstrap
+                imports where the device **always** reboots regardless of
+                the fabric greenfield debug setting.
 
         Returns:
             ``True`` if all switches are manageable, ``False`` on timeout.
@@ -328,19 +344,38 @@ class SwitchWaitUtils:
         if not self._wait_for_system_mode(serial_numbers):
             return False
 
-        # Phase 3: greenfield shortcut
-        if self._is_greenfield_debug_enabled():
+        # Phase 3: brownfield shortcut — no reload expected
+        if all_preserve_config:
             self.log.info(
-                "Greenfield debug flag enabled — skipping reload detection"
+                "All switches are brownfield (preserve_config=True) — "
+                "skipping reload detection (phases 5-6)"
             )
             return True
 
-        # Phase 4: wait for "unreachable" (switch is reloading)
-        if not self._wait_for_discovery_state(serial_numbers, "unreachable"):
+        # Phase 4: greenfield shortcut (skipped for POAP bootstrap)
+        if not skip_greenfield_check and self._is_greenfield_debug_enabled():
+            self.log.info(
+                "Greenfield debug flag enabled — "
+                "skipping reload detection"
+            )
+            return True
+
+        if skip_greenfield_check:
+            self.log.info(
+                "Greenfield debug check skipped "
+                "(POAP bootstrap — device always reboots)"
+            )
+
+        # Phase 5: wait for "unreachable" (switch is reloading)
+        if not self._wait_for_discovery_state(
+            serial_numbers, "unreachable"
+        ):
             return False
 
-        # Phase 5: wait for "ok" (switch is ready)
-        return self._wait_for_discovery_state(serial_numbers, "ok")
+        # Phase 6: wait for "ok" (switch is ready)
+        return self._wait_for_discovery_state(
+            serial_numbers, "ok"
+        )
 
     def wait_for_discovery(
         self,

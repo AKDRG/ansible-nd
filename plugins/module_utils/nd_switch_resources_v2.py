@@ -457,11 +457,29 @@ class NDSwitchResourceModule():
         # Common post-processing for all switches (new + migration)
         all_serial_numbers = [sn for sn, _ in switch_actions]
 
+        # Brownfield optimisation: if every switch in this batch uses
+        # preserve_config=True the switches will NOT reload after being
+        # added to the fabric.  Passing this flag lets the wait utility
+        # skip the unreachable/reload detection phases (mirroring the
+        # legacy dcnm_inventory all_brownfield_switches logic).
+        all_preserve_config = all(
+            cfg.preserve_config for _, cfg in switch_actions
+        )
+        if all_preserve_config:
+            self.log.info(
+                "All switches in batch are brownfield "
+                "(preserve_config=True) — "
+                "reload detection will be skipped"
+            )
+
         self.log.info(
             f"Waiting for {len(all_serial_numbers)} switch(es) to become manageable: "
             f"{all_serial_numbers}"
         )
-        success = self.wait_utils.wait_for_switch_manageable(all_serial_numbers)
+        success = self.wait_utils.wait_for_switch_manageable(
+            all_serial_numbers,
+            all_preserve_config=all_preserve_config,
+        )
         if not success:
             self.log.warning("Some switches did not become fully manageable")
 
@@ -1364,6 +1382,36 @@ class NDSwitchResourceModule():
             if import_models:
                 self._import_bootstrap_switches(import_models)
 
+                # Post-import processing: wait, save credentials, finalize
+                # Bootstrap switches are imported into the fabric and will
+                # boot/reload, similar to normal switch import.
+                switch_actions: List[Tuple[str, SwitchConfigModel]] = []
+                for switch_cfg, poap_cfg in bootstrap_entries:
+                    serial = poap_cfg.serial_number
+                    switch_actions.append((serial, switch_cfg))
+
+                all_serials = [sn for sn, _ in switch_actions]
+                self.log.info(
+                    f"Waiting for {len(all_serials)} bootstrap "
+                    f"switch(es) to become manageable: {all_serials}"
+                )
+                # POAP bootstrap: device always reboots regardless
+                # of the greenfield debug flag, so we must skip
+                # the greenfield shortcut and do full reload
+                # detection.
+                success = self.wait_utils.wait_for_switch_manageable(
+                    all_serials,
+                    skip_greenfield_check=True,
+                )
+                if not success:
+                    self.log.warning(
+                        "Some bootstrap switches did not become "
+                        "fully manageable"
+                    )
+
+                self._bulk_save_credentials(switch_actions)
+                self._finalize_operations()
+
         # Handle pre-provision entries
         if preprov_entries:
             preprov_models: List[PreProvisionSwitchModel] = []
@@ -1736,9 +1784,17 @@ class NDSwitchResourceModule():
             f"Waiting for {len(all_new_serials)} RMA switch(es) to "
             f"become manageable: {all_new_serials}"
         )
-        success = self.wait_utils.wait_for_switch_manageable(all_new_serials)
+        # RMA replacement switches always boot fresh — greenfield
+        # debug flag is irrelevant, so skip the shortcut.
+        success = self.wait_utils.wait_for_switch_manageable(
+            all_new_serials,
+            skip_greenfield_check=True,
+        )
         if not success:
-            self.log.warning("One or more RMA switches did not become manageable")
+            self.log.warning(
+                "One or more RMA switches did not "
+                "become manageable"
+            )
 
         self._bulk_save_credentials(switch_actions)
         self._finalize_operations()
