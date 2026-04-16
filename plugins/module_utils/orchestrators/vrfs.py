@@ -45,6 +45,12 @@ from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.types impor
 from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.strategies.base_vrf import (
     BaseVrfStrategy,
 )
+from ansible_collections.cisco.nd.plugins.module_utils.endpoints.v1.manage.manage_fabrics_vrfs import (
+    EpManageFabricsVrfsPost,
+)
+from ansible_collections.cisco.nd.plugins.module_utils.endpoints.v1.manage.manage_fabrics_vrfactions import (
+    EpManageFabricsVrfActionsRemovePost,
+)
 
 NDVrfModel = VrfDataModel
 
@@ -75,6 +81,11 @@ class NDVrfOrchestrator(NDBaseOrchestrator["NDVrfModel"]):
     delete_endpoint: Optional[Type] = None
     query_one_endpoint: Optional[Type] = None
     query_all_endpoint: Optional[Type] = None
+
+    # Bulk endpoints satisfy the base-class validator; the actual endpoint
+    # selection is handled in our overridden create_bulk / delete_bulk methods.
+    create_bulk_endpoint: Optional[Type] = EpManageFabricsVrfsPost
+    delete_bulk_endpoint: Optional[Type] = EpManageFabricsVrfActionsRemovePost
 
     # Strategy is injected at construction time by nd_vrf.py / VrfFabricResolver.
     strategy: Optional[BaseVrfStrategy] = None

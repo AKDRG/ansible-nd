@@ -70,6 +70,14 @@ class VrfChildConfigModel(NDNestedModel):
         description="Name of the child fabric",
     )
 
+    # --- L3VNI without VLAN override ---
+
+    l3vni_wo_vlan: Optional[bool] = Field(
+        default=None,
+        alias="l3vniWoVlan",
+        description="Enable L3VNI without VLAN on this child fabric",
+    )
+
     # --- VLAN / SVI overrides ---
 
     vlan_id: Optional[int] = Field(

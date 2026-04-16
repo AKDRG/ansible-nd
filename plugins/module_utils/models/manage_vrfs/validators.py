@@ -123,8 +123,8 @@ class VrfValidators:
         Validate a single route target string.
 
         Based on: components/schemas/vrfAttachmentInstanceValues
-        Pattern: ^((\d{1,5}:\d{1,9})|(\d{1,10}:\d{1,9})|
-                 ((25[0-5]|2[0-4]\d|1\d{2}|\d{1,2})\.(...)<ip>:\d{1,9}))$
+        Pattern: ``^((\\d{1,5}:\\d{1,9})|(\\d{1,10}:\\d{1,9})|
+                 ((25[0-5]|2[0-4]\\d|1\\d{2}|\\d{1,2})\\.(...):<ip>:\\d{1,9}))$``
         """
         if v is None:
             return None
@@ -234,7 +234,7 @@ class VrfValidators:
         Validate VLAN name used in VRF attachment instance values.
 
         Based on: components/schemas/vrfAttachmentInstanceValues (vrfVlanName)
-        pattern: ^[^\?,\\,\s]*$, maxLength: 128
+        pattern: ``^[^\\?,\\\\,\\s]*$``, maxLength: 128
         """
         if v is None:
             return None

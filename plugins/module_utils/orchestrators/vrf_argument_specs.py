@@ -12,44 +12,117 @@ files can import them at the top level without creating a circular dependency
 """
 
 
-def vrf_base_argument_spec():
-    """Argument spec for a single VRF config entry (standalone / child fabrics)."""
+def _route_target_spec():
+    """Argument spec fragment for a route-target list field."""
+    return dict(type="list", elements="str")
+
+
+def _trm_fields_spec(defaults=True):
+    """TRM-related fields. When defaults=True, booleans default to False."""
+    if defaults:
+        return dict(
+            trm_enable=dict(type="bool", default=False),
+            no_rp=dict(type="bool", default=False),
+            rp_external=dict(type="bool", default=False),
+            rp_address=dict(type="str"),
+            rp_loopback_id=dict(type="int"),
+            underlay_mcast_ip=dict(type="str"),
+            overlay_mcast_group=dict(type="str"),
+            trm_bgw_msite=dict(type="bool", default=False),
+            import_mvpn_rt=_route_target_spec(),
+            export_mvpn_rt=_route_target_spec(),
+        )
+    # Child overrides — all optional, no defaults
     return dict(
-        vrf_name=dict(type="str", required=True),
-        vrf_template=dict(type="str", default="Default_VRF_Universal"),
-        vrf_id=dict(type="int"),
-        vlan_id=dict(type="int"),
-        deploy=dict(type="bool", default=True),
-        attach=dict(
-            type="list",
-            elements="dict",
-            default=[],
-            options=dict(
-                ip_address=dict(type="str", required=True),
-                vlan_id=dict(type="int"),
-                deploy=dict(type="bool", default=True),
-                vrf_lite=dict(type="list", elements="dict", default=[]),
-            ),
-        ),
+        trm_enable=dict(type="bool"),
+        no_rp=dict(type="bool"),
+        rp_external=dict(type="bool"),
+        rp_address=dict(type="str"),
+        rp_loopback_id=dict(type="int"),
+        underlay_mcast_ip=dict(type="str"),
+        overlay_mcast_group=dict(type="str"),
+        trm_bgw_msite=dict(type="bool"),
+        import_mvpn_rt=_route_target_spec(),
+        export_mvpn_rt=_route_target_spec(),
     )
+
+
+def vrf_base_argument_spec():
+    """Argument spec for a single VRF config entry (standalone fabrics)."""
+    spec = dict(
+        # Identity
+        vrf_name=dict(type="str", required=True),
+        vrf_id=dict(type="int"),
+        # Templates
+        vrf_template=dict(type="str", default="Default_VRF_Universal"),
+        vrf_extension_template=dict(type="str", default="Default_VRF_Extension_Universal"),
+        service_vrf_template=dict(type="str"),
+        # VLAN / SVI
+        vlan_id=dict(type="int"),
+        vrf_vlan_name=dict(type="str"),
+        vrf_intf_desc=dict(type="str"),
+        vrf_int_mtu=dict(type="int", default=9216),
+        l3vni_wo_vlan=dict(type="bool", default=False),
+        # Description
+        vrf_description=dict(type="str"),
+        # Routing
+        loopback_route_tag=dict(type="int", default=12345),
+        redist_direct_rmap=dict(type="str", default="FABRIC-RMAP-REDIST-SUBNET"),
+        v6_redist_direct_rmap=dict(type="str", default="FABRIC-RMAP-REDIST-SUBNET"),
+        max_bgp_paths=dict(type="int", default=1),
+        max_ibgp_paths=dict(type="int", default=2),
+        ipv6_linklocal_enable=dict(type="bool", default=True),
+        # Route targets
+        disable_rt_auto=dict(type="bool", default=False),
+        import_vpn_rt=_route_target_spec(),
+        export_vpn_rt=_route_target_spec(),
+        import_evpn_rt=_route_target_spec(),
+        export_evpn_rt=_route_target_spec(),
+        # Advertising
+        adv_host_routes=dict(type="bool", default=False),
+        adv_default_routes=dict(type="bool", default=True),
+        static_default_route=dict(type="bool", default=True),
+        # BGP authentication
+        bgp_password=dict(type="str", no_log=True),
+        bgp_passwd_encrypt=dict(type="int", choices=[3, 7]),
+        # Netflow
+        netflow_enable=dict(type="bool", default=False),
+        nf_monitor=dict(type="str"),
+    )
+    spec.update(_trm_fields_spec(defaults=True))
+    return spec
 
 
 def _child_fabric_config_element_spec():
     """Argument spec for one entry inside child_fabric_config."""
-    return dict(
+    spec = dict(
+        # Identity (required)
         fabric=dict(type="str", required=True),
-        attach=dict(
-            type="list",
-            elements="dict",
-            default=[],
-            options=dict(
-                ip_address=dict(type="str", required=True),
-                vlan_id=dict(type="int"),
-                deploy=dict(type="bool", default=False),
-                vrf_lite=dict(type="list", elements="dict", default=[]),
-            ),
-        ),
+        # L3VNI without VLAN
+        l3vni_wo_vlan=dict(type="bool"),
+        # VLAN / SVI overrides
+        vlan_id=dict(type="int"),
+        vrf_vlan_name=dict(type="str"),
+        vrf_intf_desc=dict(type="str"),
+        vrf_int_mtu=dict(type="int"),
+        # Advertising overrides
+        adv_host_routes=dict(type="bool"),
+        adv_default_routes=dict(type="bool"),
+        static_default_route=dict(type="bool"),
+        # BGP authentication overrides
+        bgp_password=dict(type="str", no_log=True),
+        bgp_passwd_encrypt=dict(type="int", choices=[3, 7]),
+        # Netflow overrides
+        netflow_enable=dict(type="bool"),
+        nf_monitor=dict(type="str"),
+        # Route-target overrides
+        import_vpn_rt=_route_target_spec(),
+        export_vpn_rt=_route_target_spec(),
+        import_evpn_rt=_route_target_spec(),
+        export_evpn_rt=_route_target_spec(),
     )
+    spec.update(_trm_fields_spec(defaults=False))
+    return spec
 
 
 def vrf_parent_argument_spec():

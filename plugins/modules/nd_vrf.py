@@ -1,7 +1,7 @@
 #!/usr/bin/python
 # -*- coding: utf-8 -*-
 
-# Copyright: (c) 2026, Cisco and/or its affiliates.
+# Copyright: (c) 2026, Akshayanat C S (@achengam) <achengam@cisco.com>
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
 from __future__ import absolute_import, division, print_function
@@ -12,19 +12,21 @@ DOCUMENTATION = r"""
 ---
 module: nd_vrf
 version_added: "1.0.0"
-short_description: Manages VRFs on Cisco Nexus Dashboard.
+short_description: Manages VRF definitions on Cisco Nexus Dashboard.
 description:
-  - Manages network VRFs on Cisco Nexus Dashboard across standalone,
+  - Manages VRF definitions on Cisco Nexus Dashboard across standalone,
     Multisite (MSD), and Multicluster (MFD) fabric topologies.
+  - This module manages *VRF definitions only* (identity, templates,
+    VLAN/SVI, TRM, routing, netflow, route targets). VRF attachment and
+    deployment to switches is handled by a separate module.
   - Automatically detects fabric type from the ND API and routes to the
     appropriate workflow without requiring extra user input.
-  - For parent fabrics (MSD / MFD), supports recursive child-fabric
-    coordination via the C(child_fabric_config) parameter inside each
-    VRF definition.
+  - For parent fabrics (MSD / MFD), supports child-fabric coordination
+    via the C(child_fabric_config) parameter inside each VRF definition.
   - Child fabrics only permit C(state=query) when targeted directly;
     all write operations must be driven through the parent fabric.
 author:
-  - Cisco ND Team
+  - Akshayanat C S (@achengam)
 options:
   fabric:
     description:
@@ -47,60 +49,303 @@ options:
     default: merged
   config:
     description:
-      - List of VRF configurations to manage.
+      - List of VRF definition configurations to manage.
+      - Each element defines a VRF with identity, template, VLAN/SVI,
+        routing, TRM, and other settings.
       - For parent fabrics each item may include a C(child_fabric_config)
-        list that drives the recursive child-fabric invocation.
+        list to provide per-child-fabric overrides (VLAN, TRM, BGP auth,
+        netflow, route targets).
     type: list
     elements: dict
     required: true
-  fabric_details:
-    description:
-      - Internal parameter injected by VrfWorkflowCoordinator when invoking
-        child-fabric tasks recursively.
-      - Not intended for direct use in playbooks.
-    type: dict
+    suboptions:
+      vrf_name:
+        description: Name of the VRF (max 94 characters).
+        type: str
+        required: true
+      vrf_id:
+        description: L3 VNI (VRF segment ID), 1-16777214.
+        type: int
+      vrf_template:
+        description: Config template for the VRF.
+        type: str
+        default: Default_VRF_Universal
+      vrf_extension_template:
+        description: Config template for the VRF extension.
+        type: str
+        default: Default_VRF_Extension_Universal
+      service_vrf_template:
+        description: Service config template for the VRF.
+        type: str
+      vlan_id:
+        description: VLAN ID for the VRF SVI (2-4094). Not used when C(l3vni_wo_vlan=true).
+        type: int
+      vrf_vlan_name:
+        description: VLAN name for the VRF SVI.
+        type: str
+      vrf_intf_desc:
+        description: Description for the VRF SVI interface.
+        type: str
+      vrf_int_mtu:
+        description: MTU for the VRF SVI interface (68-9216).
+        type: int
+        default: 9216
+      l3vni_wo_vlan:
+        description: Configure L3VNI without VLAN/SVI.
+        type: bool
+        default: false
+      vrf_description:
+        description: Description of the VRF (max 255 characters).
+        type: str
+      loopback_route_tag:
+        description: Routing tag for loopback routes (0-4294967295).
+        type: int
+        default: 12345
+      redist_direct_rmap:
+        description: Route map for redistribute direct (IPv4).
+        type: str
+        default: FABRIC-RMAP-REDIST-SUBNET
+      v6_redist_direct_rmap:
+        description: Route map for redistribute direct (IPv6).
+        type: str
+        default: FABRIC-RMAP-REDIST-SUBNET
+      max_bgp_paths:
+        description: Maximum eBGP multipaths (1-64).
+        type: int
+        default: 1
+      max_ibgp_paths:
+        description: Maximum iBGP multipaths (1-64).
+        type: int
+        default: 2
+      ipv6_linklocal_enable:
+        description: Enable IPv6 link-local on VRF SVI.
+        type: bool
+        default: true
+      disable_rt_auto:
+        description: Disable automatic route-target assignment.
+        type: bool
+        default: false
+      import_vpn_rt:
+        description: VPN import route targets.
+        type: list
+        elements: str
+      export_vpn_rt:
+        description: VPN export route targets.
+        type: list
+        elements: str
+      import_evpn_rt:
+        description: EVPN import route targets.
+        type: list
+        elements: str
+      export_evpn_rt:
+        description: EVPN export route targets.
+        type: list
+        elements: str
+      trm_enable:
+        description: Enable Tenant Routed Multicast.
+        type: bool
+        default: false
+      no_rp:
+        description: No RP for TRM (SSM only). Requires C(trm_enable=true).
+        type: bool
+        default: false
+      rp_external:
+        description: RP is external to the fabric. Requires C(trm_enable=true).
+        type: bool
+        default: false
+      rp_address:
+        description: IPv4 RP address. Requires C(trm_enable=true).
+        type: str
+      rp_loopback_id:
+        description: Loopback interface ID for RP (0-1023). Requires C(trm_enable=true).
+        type: int
+      underlay_mcast_ip:
+        description: Underlay IPv4 multicast address. Requires C(trm_enable=true).
+        type: str
+      overlay_mcast_group:
+        description: Overlay multicast group (224.0.0.0/4 range). Requires C(trm_enable=true).
+        type: str
+      trm_bgw_msite:
+        description: Enable TRM on border gateway multisite. Requires C(trm_enable=true).
+        type: bool
+        default: false
+      import_mvpn_rt:
+        description: MVPN import route targets. Requires C(trm_enable=true).
+        type: list
+        elements: str
+      export_mvpn_rt:
+        description: MVPN export route targets. Requires C(trm_enable=true).
+        type: list
+        elements: str
+      adv_host_routes:
+        description: Advertise /32 and /128 host routes to edge routers.
+        type: bool
+        default: false
+      adv_default_routes:
+        description: Advertise default route internally.
+        type: bool
+        default: true
+      static_default_route:
+        description: Configure static default route.
+        type: bool
+        default: true
+      bgp_password:
+        description: BGP neighbour password (4-32 characters).
+        type: str
+      bgp_passwd_encrypt:
+        description: BGP password encryption type, 3 (3DES) or 7 (Cisco Type-7).
+        type: int
+        choices: [ 3, 7 ]
+      netflow_enable:
+        description: Enable netflow on VRF-Lite sub-interface.
+        type: bool
+        default: false
+      nf_monitor:
+        description: Netflow monitor name. Required when C(netflow_enable=true).
+        type: str
+      child_fabric_config:
+        description:
+          - Per-child-fabric override entries (parent fabrics only).
+          - Each entry targets a child member fabric and may override
+            VLAN, TRM, BGP auth, netflow, and route-target settings.
+          - Omitted fields inherit the parent VRF setting.
+        type: list
+        elements: dict
+        suboptions:
+          fabric:
+            description: Name of the child fabric.
+            type: str
+            required: true
+          l3vni_wo_vlan:
+            description: Enable L3VNI without VLAN on this child fabric.
+            type: bool
+          vlan_id:
+            description: Override VLAN ID for this child fabric (2-4094).
+            type: int
+          vrf_vlan_name:
+            description: Override VLAN name for this child fabric.
+            type: str
+          vrf_intf_desc:
+            description: Override VRF SVI interface description.
+            type: str
+          vrf_int_mtu:
+            description: Override VRF SVI interface MTU (68-9216).
+            type: int
+          trm_enable:
+            description: Enable Tenant Routed Multicast on this child fabric.
+            type: bool
+          no_rp:
+            description: No RP, SSM only. Requires C(trm_enable=true).
+            type: bool
+          rp_external:
+            description: RP is external to the child fabric. Requires C(trm_enable=true).
+            type: bool
+          rp_address:
+            description: IPv4 RP address. Requires C(trm_enable=true).
+            type: str
+          rp_loopback_id:
+            description: Loopback ID for RP (0-1023). Requires C(trm_enable=true).
+            type: int
+          underlay_mcast_ip:
+            description: Underlay IPv4 multicast address. Requires C(trm_enable=true).
+            type: str
+          overlay_mcast_group:
+            description: Overlay multicast group (224.0.0.0/4 range). Requires C(trm_enable=true).
+            type: str
+          trm_bgw_msite:
+            description: Enable TRM on border gateway multisite. Requires C(trm_enable=true).
+            type: bool
+          import_mvpn_rt:
+            description: MVPN import route targets. Requires C(trm_enable=true).
+            type: list
+            elements: str
+          export_mvpn_rt:
+            description: MVPN export route targets. Requires C(trm_enable=true).
+            type: list
+            elements: str
+          adv_host_routes:
+            description: Advertise /32 and /128 host routes.
+            type: bool
+          adv_default_routes:
+            description: Advertise default route internally.
+            type: bool
+          static_default_route:
+            description: Configure static default route.
+            type: bool
+          bgp_password:
+            description: BGP neighbour password (4-32 characters).
+            type: str
+          bgp_passwd_encrypt:
+            description: BGP password encryption type.
+            type: int
+            choices: [ 3, 7 ]
+          netflow_enable:
+            description: Enable netflow on this child fabric.
+            type: bool
+          nf_monitor:
+            description: Netflow monitor name.
+            type: str
+          import_vpn_rt:
+            description: VPN import route targets.
+            type: list
+            elements: str
+          export_vpn_rt:
+            description: VPN export route targets.
+            type: list
+            elements: str
+          import_evpn_rt:
+            description: EVPN import route targets.
+            type: list
+            elements: str
+          export_evpn_rt:
+            description: EVPN export route targets.
+            type: list
+            elements: str
 extends_documentation_fragment:
   - cisco.nd.modules
   - cisco.nd.check_mode
 """
 
 EXAMPLES = r"""
-# ── Standalone fabric ────────────────────────────────────────────────────────
+# ── Standalone fabric — create a VRF ─────────────────────────────────────────
 - name: Create VRF on standalone fabric
   cisco.nd.nd_vrf:
     fabric: fab1
     state: merged
     config:
       - vrf_name: VRF_BLUE
-        vrf_template: Default_VRF_Universal
         vrf_id: 50010
         vlan_id: 2001
-        attach:
-          - ip_address: 192.168.1.1
-            deploy: true
 
-# ── Multisite / Multicluster parent fabric ───────────────────────────────────
-- name: Create VRF on MSD parent and coordinate child fabrics
+# ── Standalone fabric — create VRF with TRM ──────────────────────────────────
+- name: Create VRF with Tenant Routed Multicast enabled
   cisco.nd.nd_vrf:
-    fabric: msd_parent_fabric
+    fabric: fab1
+    state: merged
+    config:
+      - vrf_name: VRF_MCAST
+        vrf_id: 50020
+        vlan_id: 2002
+        trm_enable: true
+        rp_address: 10.254.254.1
+        rp_loopback_id: 100
+        underlay_mcast_ip: 239.1.1.1
+        overlay_mcast_group: 239.1.1.2
+
+# ── Parent fabric — create VRF with child overrides ──────────────────────────
+- name: Create VRF on MSD parent with per-child VLAN overrides
+  cisco.nd.nd_vrf:
+    fabric: msd_parent
     state: merged
     config:
       - vrf_name: VRF_BLUE
-        vrf_template: Default_VRF_Universal
         vrf_id: 50010
         vlan_id: 2001
-        attach:
-          - ip_address: 192.168.1.1
-            deploy: true
         child_fabric_config:
           - fabric: child_fabric_1
-            attach:
-              - ip_address: 10.0.0.1
-                deploy: false
+            vlan_id: 2101
           - fabric: child_fabric_2
-            attach:
-              - ip_address: 10.0.0.2
-                deploy: false
+            vlan_id: 2102
 
 # ── Child fabric — query only ────────────────────────────────────────────────
 - name: Query VRFs on a child fabric (write ops must go through parent)
@@ -109,13 +354,26 @@ EXAMPLES = r"""
     state: query
     config: []
 
-# ── Delete VRFs (parent fabric) ──────────────────────────────────────────────
-- name: Delete a VRF from parent fabric (children follow automatically)
+# ── Delete VRFs ──────────────────────────────────────────────────────────────
+- name: Delete a VRF
   cisco.nd.nd_vrf:
-    fabric: msd_parent_fabric
+    fabric: fab1
     state: deleted
     config:
       - vrf_name: VRF_BLUE
+
+# ── Replace VRF configuration ───────────────────────────────────────────────
+- name: Replace VRF configuration (full replace)
+  cisco.nd.nd_vrf:
+    fabric: fab1
+    state: replaced
+    config:
+      - vrf_name: VRF_BLUE
+        vrf_id: 50010
+        vlan_id: 2001
+        vrf_description: "Updated Blue VRF"
+        max_bgp_paths: 4
+        max_ibgp_paths: 4
 """
 
 RETURN = r"""
@@ -151,10 +409,6 @@ child_fabrics:
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.cisco.nd.plugins.module_utils.nd import nd_argument_spec, NDModule
 from ansible_collections.cisco.nd.plugins.module_utils.common.exceptions import NDStateMachineError
-from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.vrf_argument_specs import (
-    vrf_base_argument_spec,
-    vrf_parent_argument_spec,
-)
 from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.vrf_fabric_resolver import (
     VrfFabricResolver,
 )
@@ -191,20 +445,6 @@ def vrf_parent_argument_spec():
 
 
 # ---------------------------------------------------------------------------
-# Strategy fast-path for injected fabric_details
-# ---------------------------------------------------------------------------
-
-def _strategy_from_fabric_details(fabric_name: str, fabric_details: dict):
-    """
-    Build a strategy directly from an injected fabric_details dict.
-
-    Delegates to VrfFabricResolver.strategy_from_fabric_details so the
-    mapping lives in exactly one place.
-    """
-    return VrfFabricResolver.strategy_from_fabric_details(fabric_name, fabric_details)
-
-
-# ---------------------------------------------------------------------------
 # Module entry point
 # ---------------------------------------------------------------------------
 
@@ -218,9 +458,6 @@ def main():
             choices=["merged", "replaced", "overridden", "deleted", "query"],
         ),
         config=dict(type="list", elements="dict", required=True),
-        # fabric_details is injected internally by VrfWorkflowCoordinator for
-        # child-fabric re-invocations. It is not intended for direct playbook use.
-        fabric_details=dict(type="dict"),
     )
 
     module = AnsibleModule(
@@ -230,21 +467,14 @@ def main():
 
     try:
         fabric_name: str = module.params["fabric"]
-        fabric_details = module.params.get("fabric_details")
 
-        if fabric_details:
-            # ── Fast path: coordinator-injected child task ─────────────────
-            # fabric_details was set by VrfWorkflowCoordinator — skip the
-            # resolver API round-trip and build the strategy directly.
-            strategy = _strategy_from_fabric_details(fabric_name, fabric_details)
-        else:
-            # ── Normal path: resolve strategy from ND API ──────────────────
-            nd_module = NDModule(module)
-            resolver = VrfFabricResolver(
-                nd_module=nd_module,
-                fabric_name=fabric_name,
-            )
-            strategy = resolver.resolve()
+        # Resolve the VRF strategy from the ND API
+        nd_module = NDModule(module)
+        resolver = VrfFabricResolver(
+            nd_module=nd_module,
+            fabric_name=fabric_name,
+        )
+        strategy = resolver.resolve()
 
         # Run the workflow coordinator for the resolved strategy
         coordinator = VrfWorkflowCoordinator(
