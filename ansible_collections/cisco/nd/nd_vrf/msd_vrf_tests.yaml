@@ -1,0 +1,73 @@
+---
+# Ad hoc MSD VRF test playbook.
+#
+# Run from this directory with:
+#
+#   ansible-playbook -i dcnm_hosts.yaml msd_vrf_tests.yaml -vvvvv
+#
+- name: MSD VRF Tests
+  hosts: ndfc
+  gather_facts: false
+  connection: ansible.netcommon.httpapi
+
+  vars:
+    msd_parent_fabric: msd_p
+    msd_child_fabric: AK-VXLAN
+    msd_vrf_delete_config:
+      - vrf_name: ansible-msd-vrf-aH
+    msd_vrf_config:
+      - vrf_name: ansible-msd-vrf-aH
+        vrf_id: 9008021
+        vrf_description: Ansible MSD VRF test from nd_vrf module
+        loopback_route_tag: 12345
+        redist_direct_rmap: FABRIC-RMAP-REDIST-SUBNET
+        v6_redist_direct_rmap: FABRIC-RMAP-REDIST-SUBNET
+        max_bgp_paths: 4
+        max_ibgp_paths: 4
+        ipv6_linklocal_enable: true
+        disable_rt_auto: false
+        import_vpn_rt:
+          - "65000:9008021"
+        export_vpn_rt:
+          - "65000:9008021"
+        import_evpn_rt:
+          - "65000:9008021"
+        export_evpn_rt:
+          - "65000:9008021"
+        deploy: true
+        deploy_type: vrf
+        attach:
+          - ip_address: 10.122.84.57
+        child_fabric_config:
+          - fabric: "{{ msd_child_fabric }}"
+            l3vni_wo_vlan: false
+            adv_host_routes: true
+            adv_default_routes: false
+            static_default_route: false
+
+  tasks:
+    - name: Delete MSD VRF through parent fabric
+      cisco.nd.nd_vrf:
+        fabric: "{{ msd_parent_fabric }}"
+        output_level: debug
+        timeout: 30
+        state: deleted
+        config: "{{ msd_vrf_delete_config }}"
+      register: msd_vrf_delete
+
+    - name: Show MSD VRF delete result
+      ansible.builtin.debug:
+        var: msd_vrf_delete
+
+    - name: Create and deploy MSD VRF through parent fabric
+      cisco.nd.nd_vrf:
+        fabric: "{{ msd_parent_fabric }}"
+        output_level: debug
+        timeout: 30
+        state: merged
+        config: "{{ msd_vrf_config }}"
+      register: msd_vrf_create
+
+    - name: Show MSD VRF create/deploy result
+      ansible.builtin.debug:
+        var: msd_vrf_create

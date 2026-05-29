@@ -577,9 +577,32 @@ class VrfDataModel(NDBaseModel):
         description="VLAN identifier. Must be between 2 and 4094.",
     )
     vrf_type: Optional[str] = Field(
-        default=None,
+        default=VrfType.VXLAN_IBGP.value,
         alias="vrfType",
         description="Type of VRF (discriminator for vrfSchema)",
+    )
+    service_vrf_template_name: Optional[str] = Field(
+        default=None,
+        alias="serviceVrfTemplateName",
+        description="Service VRF template name for userDefined VRFs",
+    )
+    vrf_template_name: Optional[str] = Field(
+        default=None,
+        alias="vrfTemplateName",
+        description="VRF template name for userDefined VRFs",
+    )
+    vrf_extension_template_name: Optional[str] = Field(
+        default=None,
+        alias="vrfExtensionTemplateName",
+        description="VRF extension template name for userDefined VRFs",
+    )
+    vrf_template_config: Optional[Dict[str, str]] = Field(
+        default=None,
+        alias="vrfTemplateConfig",
+        description=(
+            "Template parameter values for userDefined VRFs. Schema requires "
+            "a JSON object with string values"
+        ),
     )
     core_data: Optional[Any] = Field(
         default=None,
@@ -629,6 +652,35 @@ class VrfDataModel(NDBaseModel):
     @classmethod
     def validate_vrf_name(cls, v: str) -> str:
         return VrfValidators.require_vrf_name(v)
+
+    @field_validator("vrf_type", mode="before")
+    @classmethod
+    def validate_vrf_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = str(v).strip()
+        if v not in VrfType.choices():
+            raise ValueError(
+                f"vrfType must be one of {VrfType.choices()}, got: {v}"
+            )
+        return v
+
+    @field_validator("vrf_template_config", mode="before")
+    @classmethod
+    def validate_vrf_template_config(
+        cls, v: Optional[Dict[str, str]]
+    ) -> Optional[Dict[str, str]]:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            raise ValueError("vrfTemplateConfig must be a dictionary")
+        bad = [key for key, value in v.items() if not isinstance(value, str)]
+        if bad:
+            raise ValueError(
+                "vrfTemplateConfig values must be strings for keys: "
+                f"{', '.join(str(key) for key in bad)}"
+            )
+        return v
 
 
 class VrfCreateRequestModel(NDBaseModel):

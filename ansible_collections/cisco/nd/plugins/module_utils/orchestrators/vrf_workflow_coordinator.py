@@ -1,0 +1,1282 @@
+# Copyright: (c) 2026, Akshayanat C S (@achengam) <achengam@cisco.com>
+# GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
+
+from __future__ import absolute_import, division, print_function
+
+"""
+VrfWorkflowCoordinator — Parent / child VRF workflow orchestration.
+
+Replaces the following workflow handlers from the dcnm_vrf action plugin:
+  - handle_parent_workflow
+  - handle_child_workflow
+  - handle_standalone_workflow
+  - create_child_task / execute_child_task
+  - create_structured_results
+
+The coordinator is constructed inside nd_vrf.py after the strategy is
+resolved. For standalone and child fabrics it runs the state machine
+directly. For parent fabrics it:
+  1. Pre-validates the config (vlan_id placement, vrf_lite structure).
+  2. Strips child_fabric_config from each VRF → clean parent config.
+  3. Runs the parent task via NDStateMachine (once wired).
+  4. Builds child module_args per child fabric and re-invokes nd_vrf.
+  5. Aggregates and structures the combined results.
+"""
+
+import copy
+import time
+from typing import Any, Dict, List, Optional, Set, Tuple
+
+from ansible.module_utils.basic import AnsibleModule
+
+from ansible_collections.cisco.nd.plugins.module_utils.enums import OperationType
+from ansible_collections.cisco.nd.plugins.module_utils.nd_state_machine import NDStateMachine
+from ansible_collections.cisco.nd.plugins.module_utils.endpoints.v1.manage.manage_fabrics_vrfactions import (
+    EpManageFabricsVrfActionsDeployPost,
+)
+from ansible_collections.cisco.nd.plugins.module_utils.endpoints.v1.manage.manage_fabrics_vrfattachments import (
+    EpManageFabricsVrfAttachmentsPost,
+    EpManageFabricsVrfAttachmentsQueryPost,
+)
+from ansible_collections.cisco.nd.plugins.module_utils.endpoints.v1.manage.manage_switches import (
+    EpManageSwitchesListGet,
+)
+from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.vrf_actions_models import (
+    VrfDeployRequestModel,
+)
+from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.vrf_attachment_models import (
+    VrfAttachDetachRequestModel,
+    VrfAttachmentModel,
+    VrfAttachmentQueryRequestModel,
+    VrfAttachmentInstanceValuesModel,
+)
+from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.vrfs import NDVrfOrchestrator
+from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.strategies.base_vrf import (
+    BaseVrfStrategy,
+)
+from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.vrf_fabric_resolver import (
+    VrfFabricResolver,
+)
+from ansible_collections.cisco.nd.plugins.module_utils.rest.response_handler_nd import ResponseHandler
+from ansible_collections.cisco.nd.plugins.module_utils.rest.rest_send import RestSend
+from ansible_collections.cisco.nd.plugins.module_utils.rest.results import Results
+from ansible_collections.cisco.nd.plugins.module_utils.rest.sender_nd import Sender
+from ansible_collections.cisco.nd.plugins.module_utils.common.pydantic_compat import (
+    ValidationError,
+)
+
+
+class VrfWorkflowCoordinator:
+    """
+    Coordinates VRF operations across parent and child fabrics.
+
+    Args:
+        module:   The AnsibleModule instance (params, fail_json, check_mode).
+        strategy: The resolved BaseVrfStrategy for the target fabric.
+    """
+
+    def __init__(
+        self,
+        module: AnsibleModule,
+        strategy: BaseVrfStrategy,
+    ):
+        self.module = module
+        self.strategy = strategy
+
+    # ── Entry point ───────────────────────────────────────────────
+
+    def run(self) -> Dict[str, Any]:
+        """
+        Execute the workflow appropriate for the resolved fabric type.
+
+        Returns a result dict suitable for module.exit_json(**result).
+        """
+        module_args: Dict = dict(self.module.params)
+        fabric_type: str = self.strategy.fabric_type
+
+        if self.strategy.is_child:
+            return self._handle_child_workflow(module_args, fabric_type)
+        elif self.strategy.is_parent:
+            return self._handle_parent_workflow(module_args, fabric_type)
+        else:
+            return self._handle_standalone_workflow(module_args, fabric_type)
+
+    # ── Config parsing ────────────────────────────────────────────
+
+    def _parse_config(
+        self,
+        config: List[Dict],
+        model_cls: type,
+        state: str,
+    ) -> List[Dict]:
+        """
+        Validate each entry in ``config`` against ``model_cls`` and return
+        the normalised list (Python field names, None values excluded).
+
+        ``state`` is passed for context in error messages only; all states
+        are validated the same way since the models enforce required fields.
+
+        Validation errors are reported immediately via ``module.fail_json``.
+        """
+        parsed = []
+        for idx, entry in enumerate(config):
+            try:
+                model = model_cls.from_config(entry)
+                parsed.append(model.to_config())
+            except ValidationError as exc:
+                self.module.fail_json(
+                    msg=(
+                        f"config[{idx}] validation failed "
+                        f"({model_cls.__name__}, state={state!r}): {exc}"
+                    )
+                )
+        return parsed
+
+    # ── Workflow handlers ─────────────────────────────────────────
+
+    def _handle_standalone_workflow(
+        self, module_args: Dict, fabric_type: str
+    ) -> Dict[str, Any]:
+        """
+        Direct pass-through to the state machine.
+
+        No child fabric considerations. Applies to standalone fabrics and
+        to child fabrics that are targeted directly with state=query.
+        """
+        state = module_args.get("state", "merged")
+        module_args["config"] = self._parse_config(
+            module_args.get("config") or [], self.strategy.config_model_cls, state
+        )
+        result = self._run_state_machine_with_attachments(module_args)
+        result.setdefault("fabric_type", fabric_type)
+        result.setdefault("workflow", "Standalone Fabric VRF Processing")
+        return result
+
+    def _handle_child_workflow(
+        self, module_args: Dict, fabric_type: str
+    ) -> Dict[str, Any]:
+        """
+        Enforce the Multisite / Multicluster operational model for child fabrics.
+
+        Only state='query' is permitted when the module targets a child fabric
+        directly. All write operations must be driven by the parent fabric.
+        """
+        state = module_args.get("state")
+        fabric_name = module_args.get("fabric")
+
+        if state == "query":
+            module_args["config"] = self._parse_config(
+                module_args.get("config") or [], self.strategy.config_model_cls, state
+            )
+            result = self._run_state_machine(module_args)
+            result.setdefault("fabric_type", fabric_type)
+            result.setdefault(
+                "workflow",
+                f"{fabric_type.replace('_', ' ').title()} VRF Query",
+            )
+            return result
+
+        self.module.fail_json(
+            msg=(
+                f"Attempted '{state}' operation directly on child fabric "
+                f"'{fabric_name}'. "
+                "Only state='query' is allowed on child fabrics. "
+                "Run the operation against the parent fabric instead."
+            )
+        )
+
+    def _handle_parent_workflow(
+        self, module_args: Dict, fabric_type: str
+    ) -> Dict[str, Any]:
+        """
+        Full parent orchestration: parent fabric first, then all child fabrics.
+
+        Workflow steps:
+          1. Pre-validate configs (vlan_id placement, vrf_lite structure).
+          2. Split each VRF's child_fabric_config entries into per-fabric tasks.
+          3. Build a clean parent config (child_fabric_config stripped).
+          4. Run the parent state machine.
+          5. If parent succeeded, execute each child task sequentially.
+          6. Aggregate all results into a structured response.
+        """
+        log_type = "multicluster" if "multicluster" in fabric_type else "multisite"
+        parent_fabric = module_args.get("fabric")
+        state = module_args.get("state", "merged")
+        config: List[Dict] = self._parse_config(
+            module_args.get("config") or [], self.strategy.config_model_cls, state
+        )
+
+        # Collect member fabric names for relationship validation
+        child_member_names = self.strategy.child_fabric_members()
+        child_fabric_data_map: Dict[str, Dict] = {
+            m.get("fabricName"): m
+            for m in self.strategy.fabric_data.get("members", [])
+            if m.get("fabricName")
+        }
+
+        # Step 2 & 3 — split config into parent config + child task groups
+        parent_config: List[Dict] = []
+        child_tasks_dict: Dict[str, Dict] = {}
+
+        for vrf in config:
+            child_configs = vrf.get("child_fabric_config") or []
+
+            if state != "deleted":
+                for child_cfg in child_configs:
+                    child_fabric_name = child_cfg.get("fabric")
+                    if child_fabric_name not in child_member_names:
+                        self.module.fail_json(
+                            msg=(
+                                f"Fabric '{child_fabric_name}' is not a member of "
+                                f"parent fabric '{parent_fabric}'. "
+                                f"Known members: {child_member_names}"
+                            )
+                        )
+                    child_tasks_dict = self._accumulate_child_task(
+                        vrf,
+                        child_cfg,
+                        child_tasks_dict,
+                        child_fabric_data_map.get(child_fabric_name, {}),
+                        state,
+                    )
+
+            # Parent config: same VRF but without child_fabric_config
+            parent_vrf = copy.deepcopy(vrf)
+            parent_vrf.pop("child_fabric_config", None)
+            parent_config.append(parent_vrf)
+
+        # Step 4 — run parent state machine
+        parent_module_args = copy.deepcopy(module_args)
+        parent_module_args["config"] = parent_config
+        parent_result = self._run_state_machine_with_attachments(
+            parent_module_args,
+            defer_deploy=True,
+        )
+
+        # Step 5 — execute child tasks (only if parent succeeded)
+        child_results: List[Dict] = []
+        if not parent_result.get("failed", False) and child_tasks_dict:
+            for child_task in child_tasks_dict.values():
+                child_result = self._run_child_task(child_task)
+                child_result["child_fabric"] = child_task["fabric"]
+                child_results.append(child_result)
+                if child_result.get("failed", False):
+                    # Abort on first child failure
+                    break
+
+        if not parent_result.get("failed", False) and not any(
+            result.get("failed", False) for result in child_results
+        ):
+            deploy_payloads = parent_result.pop("_deferred_deploy_payloads", [])
+            deploy_payload = parent_result.pop("_deferred_deploy_payload", None)
+            if deploy_payload:
+                deploy_payloads.append(deploy_payload)
+            for deploy_payload in deploy_payloads:
+                if deploy_payload:
+                    deploy_trace = self._deploy_vrf_attachments(
+                        parent_module_args,
+                        self.strategy,
+                        deploy_payload,
+                    )
+                    self._merge_api_trace(parent_result, deploy_trace)
+
+        # Step 6 — aggregate and structure results
+        return self._build_structured_result(
+            parent_result, child_results, parent_fabric, fabric_type, log_type
+        )
+
+    # ── Config splitting helpers ──────────────────────────────────
+
+    def _accumulate_child_task(
+        self,
+        parent_vrf: Dict,
+        child_cfg: Dict,
+        child_tasks_dict: Dict,
+        child_fabric_data: Dict,
+        state: str,
+    ) -> Dict:
+        """
+        Merge one child_fabric_config entry into the running child_tasks_dict,
+        grouping configs by child fabric name.
+
+        Multiple VRFs that target the same child fabric are batched into a
+        single task entry so only one module call is needed per child fabric.
+        """
+        child_cfg = copy.deepcopy(child_cfg)
+        child_fabric_name: str = child_cfg.pop("fabric")
+
+        # Inherit the VRF name from the parent VRF definition
+        child_cfg["vrf_name"] = parent_vrf.get("vrf_name")
+
+        if child_fabric_name in child_tasks_dict:
+            # Append to existing child task (batch multiple VRFs together)
+            child_tasks_dict[child_fabric_name]["module_args"]["config"].append(child_cfg)
+            child_tasks_dict[child_fabric_name]["vrf_list"].append(child_cfg["vrf_name"])
+        else:
+            # First VRF for this child: create a new task entry
+            child_module_args = self.strategy.build_child_task_args(
+                child_fabric_name=child_fabric_name,
+                vrf_configs=[child_cfg],
+                state=state,
+            )
+            child_tasks_dict[child_fabric_name] = {
+                "fabric": child_fabric_name,
+                "module_args": child_module_args,
+                "vrf_list": [child_cfg["vrf_name"]],
+                "strategy": VrfFabricResolver.strategy_from_fabric_details(
+                    child_fabric_name, child_fabric_data
+                ),
+            }
+
+        return child_tasks_dict
+
+    # ── State machine runner ──────────────────────────────────────
+
+    def _run_state_machine(
+        self, module_args: Dict, strategy: Optional[BaseVrfStrategy] = None
+    ) -> Dict[str, Any]:
+        """
+        Run NDStateMachine for the given module_args and return the result dict.
+
+        ``strategy`` defaults to ``self.strategy`` (the resolved fabric strategy).
+        Pass an explicit strategy when running child fabric tasks so the
+        orchestrator uses the child's endpoint configuration instead of the
+        parent's.
+
+        fabric_name injection (previously done here) is now handled by
+        NDVrfOrchestrator.prepare_config_data(), called by the state machine
+        before building the proposed collection.
+        """
+        active_strategy = strategy or self.strategy
+        state = module_args.get("state", "merged")
+
+        original_config = self.module.params.get("config")
+        original_state = self.module.params.get("state")
+        try:
+            self.module.params["config"] = module_args.get("config") or []
+            self.module.params["state"] = state
+
+            sender = Sender()
+            sender.ansible_module = self.module
+            rest_send_params = dict(self.module.params)
+            rest_send_params["check_mode"] = self.module.check_mode
+            rest_send = RestSend(rest_send_params)
+            rest_send.sender = sender
+            rest_send.response_handler = ResponseHandler()
+
+            orchestrator = NDVrfOrchestrator(
+                rest_send=rest_send,
+                strategy=active_strategy,
+            )
+            sm = NDStateMachine(module=self.module, model_orchestrator=orchestrator)
+
+            if state != "query":
+                sm.manage_state()
+
+            verbosity = self.module._verbosity if hasattr(self.module, "_verbosity") else 0
+            if self.module.params.get("output_level") == "debug":
+                verbosity = max(verbosity, 3)
+            return sm.output.format_with_verbosity(verbosity, sm.results)
+        finally:
+            self.module.params["config"] = original_config
+            self.module.params["state"] = original_state
+
+    def _run_state_machine_with_attachments(
+        self,
+        module_args: Dict,
+        strategy: Optional[BaseVrfStrategy] = None,
+        defer_deploy: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Run VRF CRUD plus attachment/deploy side effects for parent scopes.
+
+        The Manage API treats VRF definition, attachment, and deployment as
+        separate endpoints.  Keep attach/deploy out of the VRF payload and
+        apply them around the normal state machine.
+        """
+        active_strategy = strategy or self.strategy
+        state = module_args.get("state", "merged")
+
+        if active_strategy.is_child or state == "query":
+            return self._run_state_machine(module_args, strategy=active_strategy)
+
+        if state == "deleted":
+            return self._run_deleted_state_machine_with_detach_deploy(
+                module_args,
+                active_strategy,
+            )
+
+        pre_attach = self._apply_attachment_phase(
+            module_args,
+            active_strategy,
+            phase="pre",
+        )
+        result = self._run_state_machine(module_args, strategy=active_strategy)
+        self._merge_api_trace(result, pre_attach)
+
+        if result.get("failed", False):
+            return result
+
+        post_attach = self._apply_attachment_phase(
+            module_args,
+            active_strategy,
+            phase="post",
+        )
+        self._merge_api_trace(result, post_attach)
+
+        deploy_payloads = self._build_deploy_payloads(
+            module_args.get("config") or [],
+            pre_attach.get("deploy_targets", {}),
+            post_attach.get("deploy_targets", {}),
+        )
+        if not deploy_payloads:
+            deploy_payloads = self._build_pending_vrf_deploy_payloads(
+                result,
+                module_args.get("config") or [],
+                module_args,
+                active_strategy,
+            )
+        if not deploy_payloads:
+            return result
+
+        if defer_deploy:
+            result["_deferred_deploy_payloads"] = deploy_payloads
+            return result
+
+        for deploy_payload in deploy_payloads:
+            deploy_trace = self._deploy_vrf_attachments(
+                module_args,
+                active_strategy,
+                deploy_payload,
+            )
+            self._merge_api_trace(result, deploy_trace)
+        return result
+
+    def _run_deleted_state_machine_with_detach_deploy(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+    ) -> Dict[str, Any]:
+        """
+        Detach and deploy current VRF attachments before removing the VRF.
+
+        ND rejects VRF removal while attached or pending attachment changes are
+        present.  For ``state=deleted`` the requested ``attach`` block and
+        per-VRF ``deploy`` boolean are intentionally ignored; only
+        ``deploy_type`` controls whether the pre-delete deployment is scoped to
+        switches or to the VRF.
+        """
+        traces: List[Dict[str, Any]] = []
+        config = module_args.get("config") or []
+
+        detach_trace = self._apply_deleted_attachment_phase(module_args, strategy)
+        if detach_trace:
+            traces.append(detach_trace)
+
+        deploy_payloads = self._build_deploy_payloads(
+            config,
+            detach_trace.get("deploy_targets", {}) if detach_trace else {},
+        )
+        for deploy_payload in deploy_payloads:
+            deploy_trace = self._deploy_vrf_attachments(
+                module_args,
+                strategy,
+                deploy_payload,
+            )
+            traces.append(deploy_trace)
+
+        if deploy_payloads:
+            self._wait_for_vrfs_delete_ready(module_args, strategy)
+
+        result = self._run_state_machine(module_args, strategy=strategy)
+
+        for trace in reversed(traces):
+            self._merge_api_trace(result, trace, prepend=True)
+        return result
+
+    # ── Attachment / deployment helpers ──────────────────────────
+
+    def _new_vrf_orchestrator(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+    ) -> Tuple[NDVrfOrchestrator, Results]:
+        """Create a REST-capable orchestrator that records API trace data."""
+        original_config = self.module.params.get("config")
+        original_state = self.module.params.get("state")
+        try:
+            self.module.params["config"] = module_args.get("config") or []
+            self.module.params["state"] = module_args.get("state", "merged")
+
+            sender = Sender()
+            sender.ansible_module = self.module
+            rest_send_params = dict(self.module.params)
+            rest_send_params["check_mode"] = self.module.check_mode
+            rest_send = RestSend(rest_send_params)
+            rest_send.sender = sender
+            rest_send.response_handler = ResponseHandler()
+
+            results = Results()
+            orchestrator = NDVrfOrchestrator(
+                rest_send=rest_send,
+                strategy=strategy,
+                results=results,
+            )
+            return orchestrator, results
+        finally:
+            self.module.params["config"] = original_config
+            self.module.params["state"] = original_state
+
+    def _finalize_api_trace(
+        self,
+        results: Results,
+        deploy_targets: Optional[Dict[str, Set[str]]] = None,
+    ) -> Dict[str, Any]:
+        """Convert collected API calls into a compact mergeable structure."""
+        results.build_final_result()
+        final = results.final_result or {}
+        return {
+            "changed": final.get("changed", False),
+            "failed": final.get("failed", False),
+            "final": final,
+            "deploy_targets": deploy_targets or {},
+        }
+
+    def _merge_api_trace(
+        self,
+        result: Dict[str, Any],
+        trace: Dict[str, Any],
+        prepend: bool = False,
+    ) -> None:
+        """Merge attachment/deploy API trace into a state-machine result."""
+        if not trace:
+            return
+        final = trace.get("final") or {}
+        if trace.get("changed") or final.get("changed"):
+            result["changed"] = True
+        if trace.get("failed") or final.get("failed"):
+            result["failed"] = True
+
+        verbosity = self.module._verbosity if hasattr(self.module, "_verbosity") else 0
+        if self.module.params.get("output_level") == "debug":
+            verbosity = max(verbosity, 3)
+        if verbosity < 2:
+            return
+
+        field_map = {
+            "path": "api_paths",
+            "verb": "api_verbs",
+        }
+        if verbosity >= 3:
+            field_map.update(
+                {
+                    "response": "api_response",
+                    "result": "api_result",
+                    "diff": "api_diff",
+                    "metadata": "api_metadata",
+                    "payload": "api_payload",
+                }
+            )
+
+        verbosity_levels = final.get("verbosity_level", [])
+        indices = [
+            i
+            for i, level in enumerate(verbosity_levels)
+            if level <= verbosity
+        ]
+        for final_key, result_key in field_map.items():
+            values = final.get(final_key, [])
+            selected = [values[i] for i in indices if i < len(values)]
+            if selected:
+                result.setdefault(result_key, [])
+                if prepend:
+                    result[result_key] = selected + result[result_key]
+                else:
+                    result[result_key].extend(selected)
+
+    def _apply_attachment_phase(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+        phase: str,
+    ) -> Dict[str, Any]:
+        """Attach or detach VRFs according to state and phase."""
+        state = module_args.get("state", "merged")
+        config = module_args.get("config") or []
+
+        if phase == "pre" and state not in ("deleted", "replaced", "overridden"):
+            return {}
+        if phase == "post" and state not in ("merged", "replaced", "overridden"):
+            return {}
+
+        desired = self._desired_attachment_map(module_args, strategy)
+        vrf_names = self._configured_vrf_names(config)
+        deploy_enabled = self._deploy_enabled_by_vrf(config)
+
+        query_all = state == "overridden"
+        current = self._current_attachment_map(
+            module_args,
+            strategy,
+            None if query_all else vrf_names,
+        )
+
+        payloads: List[Dict[str, Any]] = []
+        deploy_targets: Dict[str, Set[str]] = {}
+
+        if phase == "pre":
+            payloads = self._planned_detach_payloads(state, config, current, desired)
+        else:
+            payloads = self._planned_attach_payloads(current, desired)
+
+        if not payloads:
+            return {}
+
+        for payload in payloads:
+            vrf_name = payload.get("vrfName")
+            if deploy_enabled.get(vrf_name, True):
+                self._record_deploy_target(
+                    deploy_targets,
+                    vrf_name,
+                    payload.get("switchId"),
+                )
+
+        return self._post_vrf_attachments(
+            module_args,
+            strategy,
+            payloads,
+            deploy_targets,
+            OperationType.DELETE if phase == "pre" else OperationType.CREATE,
+        )
+
+    def _apply_deleted_attachment_phase(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+    ) -> Dict[str, Any]:
+        """
+        Detach all current attachments for deleted VRFs, independent of config.
+
+        This uses the attachment query endpoint directly instead of the desired
+        attach map because a delete task should converge what is currently on
+        ND, not what the playbook happens to include under ``attach``.
+        """
+        vrf_names = self._configured_vrf_names(module_args.get("config") or [])
+        attachments = self._current_attachment_details(
+            module_args,
+            strategy,
+            vrf_names or None,
+        )
+
+        payloads: List[Dict[str, Any]] = []
+        deploy_targets: Dict[str, Set[str]] = {}
+        seen_payloads: Set[Tuple[str, str]] = set()
+
+        for attachment in attachments:
+            vrf_name = attachment.get("vrfName")
+            switch_id = attachment.get("switchId")
+            if not vrf_name or not switch_id:
+                continue
+
+            self._record_deploy_target(deploy_targets, vrf_name, switch_id)
+
+            key = (vrf_name, switch_id)
+            if attachment.get("attach") is True and key not in seen_payloads:
+                payloads.append(
+                    {
+                        "vrfName": vrf_name,
+                        "switchId": switch_id,
+                        "attach": False,
+                    }
+                )
+                seen_payloads.add(key)
+
+        if not payloads:
+            return {"deploy_targets": deploy_targets}
+
+        return self._post_vrf_attachments(
+            module_args,
+            strategy,
+            payloads,
+            deploy_targets,
+            OperationType.DELETE,
+        )
+
+    def _configured_vrf_names(self, config: List[Dict]) -> List[str]:
+        """Return configured VRF names in stable order."""
+        seen: Set[str] = set()
+        names: List[str] = []
+        for vrf in config:
+            name = vrf.get("vrf_name") or vrf.get("vrfName")
+            if name and name not in seen:
+                names.append(name)
+                seen.add(name)
+        return names
+
+    def _deploy_enabled_by_vrf(self, config: List[Dict]) -> Dict[str, bool]:
+        """Return per-VRF deploy intent; omitted deploy defaults to True."""
+        deploy_enabled: Dict[str, bool] = {}
+        for vrf in config:
+            name = vrf.get("vrf_name") or vrf.get("vrfName")
+            if name:
+                deploy_enabled[name] = vrf.get("deploy", True)
+        return deploy_enabled
+
+    def _deploy_type_by_vrf(self, config: List[Dict]) -> Dict[str, str]:
+        """Return per-VRF deploy scope; omitted deploy_type defaults to switch."""
+        deploy_type: Dict[str, str] = {}
+        for vrf in config:
+            name = vrf.get("vrf_name") or vrf.get("vrfName")
+            if name:
+                deploy_type[name] = vrf.get("deploy_type") or vrf.get("deployType") or "switch"
+        return deploy_type
+
+    def _desired_attachment_map(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+    ) -> Dict[Tuple[str, str], Dict[str, Any]]:
+        """Build desired attachment payloads keyed by (vrfName, switchId)."""
+        config = module_args.get("config") or []
+        ip_to_switch = self._resolve_switch_ids(module_args, strategy, config)
+        desired: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
+        for vrf in config:
+            vrf_name = vrf.get("vrf_name") or vrf.get("vrfName")
+            for attachment in vrf.get("attach") or []:
+                ip_address = attachment.get("ip_address") or attachment.get("ipAddress")
+                switch_id = ip_to_switch.get(ip_address)
+                if not vrf_name or not switch_id:
+                    continue
+
+                payload = {
+                    "vrfName": vrf_name,
+                    "switchId": switch_id,
+                    "attach": True,
+                }
+                instance_values = self._attachment_instance_values(attachment)
+                if instance_values:
+                    payload["instanceValues"] = instance_values
+                desired[(vrf_name, switch_id)] = payload
+
+        return desired
+
+    def _resolve_switch_ids(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+        config: List[Dict],
+    ) -> Dict[str, str]:
+        """Resolve configured switch IPs to ND switchId values."""
+        wanted_ips: Set[str] = set()
+        for vrf in config:
+            for attachment in vrf.get("attach") or []:
+                ip_address = attachment.get("ip_address") or attachment.get("ipAddress")
+                if ip_address:
+                    wanted_ips.add(ip_address)
+
+        if not wanted_ips:
+            return {}
+
+        orchestrator, results = self._new_vrf_orchestrator(module_args, strategy)
+        endpoint = orchestrator._make_endpoint(EpManageSwitchesListGet)
+        data = orchestrator._request(
+            path=endpoint.path,
+            verb=endpoint.verb,
+            operation_type=OperationType.QUERY,
+        )
+        # Do not expose switch inventory lookups unless they are needed for
+        # troubleshooting a failed mutation.
+        results.build_final_result()
+
+        switches = []
+        if isinstance(data, dict):
+            switches = data.get("switches") or data.get("items") or data.get("DATA") or []
+        elif isinstance(data, list):
+            switches = data
+
+        resolved: Dict[str, str] = {}
+        for switch in switches:
+            switch_id = switch.get("switchId") or switch.get("serialNumber")
+            if not switch_id:
+                continue
+            for ip_address in self._switch_ip_candidates(switch):
+                if ip_address in wanted_ips:
+                    resolved[ip_address] = switch_id
+
+        missing = sorted(wanted_ips.difference(resolved))
+        if missing:
+            self.module.fail_json(
+                msg=(
+                    "Unable to resolve attach.ip_address values to switchId "
+                    f"on fabric '{strategy.fabric_name}': {missing}"
+                )
+            )
+        return resolved
+
+    def _switch_ip_candidates(self, switch: Dict[str, Any]) -> Set[str]:
+        """Extract known management/IP fields from a switch inventory item."""
+        candidates: Set[str] = set()
+        for key in (
+            "fabricManagementIp",
+            "switchIp",
+            "managementIp",
+            "ipAddress",
+        ):
+            if switch.get(key):
+                candidates.add(str(switch[key]))
+
+        telemetry = switch.get("telemetryIpCollection") or {}
+        if isinstance(telemetry, dict):
+            for key in ("outOfBandIpV4Address", "inbandIpV4Address"):
+                if telemetry.get(key):
+                    candidates.add(str(telemetry[key]))
+        return candidates
+
+    def _attachment_instance_values(self, attachment: Dict[str, Any]) -> Dict[str, Any]:
+        """Map playbook attachment fields to ND instanceValues."""
+        raw = {
+            "loopback_id": attachment.get("loopback_id"),
+            "loopback_ipv4_address": attachment.get("loopback_ipv4_address"),
+            "loopback_ipv6_address": attachment.get("loopback_ipv6_address"),
+            "route_target_import": attachment.get("import_vpn_rt"),
+            "route_target_export": attachment.get("export_vpn_rt"),
+            "evpn_route_target_import": attachment.get("import_evpn_rt"),
+            "evpn_route_target_export": attachment.get("export_evpn_rt"),
+        }
+        raw = {key: value for key, value in raw.items() if value is not None}
+        if not raw:
+            return {}
+        return VrfAttachmentInstanceValuesModel(**raw).to_payload()
+
+    def _current_attachment_map(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+        vrf_names: Optional[List[str]],
+    ) -> Dict[Tuple[str, str], Dict[str, Any]]:
+        """Query ND and key attached VRF attachments by (vrfName, switchId)."""
+        orchestrator, _results = self._new_vrf_orchestrator(module_args, strategy)
+        endpoint = orchestrator._make_endpoint(EpManageFabricsVrfAttachmentsQueryPost)
+        if hasattr(endpoint, "endpoint_params"):
+            endpoint.endpoint_params.include_all = True
+
+        query = VrfAttachmentQueryRequestModel(vrf_names=vrf_names or None)
+        data = orchestrator._request(
+            path=endpoint.path,
+            verb=endpoint.verb,
+            data=query.to_payload(),
+            operation_type=OperationType.QUERY,
+        )
+
+        attachments = []
+        if isinstance(data, dict):
+            attachments = data.get("attachments") or data.get("items") or []
+        elif isinstance(data, list):
+            attachments = data
+
+        current: Dict[Tuple[str, str], Dict[str, Any]] = {}
+        for attachment in attachments:
+            if attachment.get("attach") is not True:
+                continue
+            vrf_name = attachment.get("vrfName")
+            switch_id = attachment.get("switchId")
+            if vrf_name and switch_id:
+                current[(vrf_name, switch_id)] = attachment
+        return current
+
+    def _current_attachment_details(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+        vrf_names: Optional[List[str]],
+    ) -> List[Dict[str, Any]]:
+        """Query all attachment details, including pending detach entries."""
+        orchestrator, results = self._new_vrf_orchestrator(module_args, strategy)
+        endpoint = orchestrator._make_endpoint(EpManageFabricsVrfAttachmentsQueryPost)
+        if hasattr(endpoint, "endpoint_params"):
+            endpoint.endpoint_params.include_all = True
+
+        query = VrfAttachmentQueryRequestModel(vrf_names=vrf_names or None)
+        data = orchestrator._request(
+            path=endpoint.path,
+            verb=endpoint.verb,
+            data=query.to_payload(),
+            operation_type=OperationType.QUERY,
+        )
+        results.build_final_result()
+
+        if isinstance(data, dict):
+            return data.get("attachments") or data.get("items") or []
+        if isinstance(data, list):
+            return data
+        return []
+
+    def _planned_detach_payloads(
+        self,
+        state: str,
+        config: List[Dict],
+        current: Dict[Tuple[str, str], Dict[str, Any]],
+        desired: Dict[Tuple[str, str], Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Compute detach payloads for deleted/replaced/overridden states."""
+        detach_keys: Set[Tuple[str, str]] = set()
+
+        if state == "deleted":
+            detach_keys = set(current.keys())
+        elif state == "overridden":
+            detach_keys = set(current.keys()).difference(desired.keys())
+        elif state == "replaced":
+            vrf_names = set(self._configured_vrf_names(config))
+            detach_keys = {
+                key for key in current.keys()
+                if key[0] in vrf_names and key not in desired
+            }
+
+        return [
+            {"vrfName": vrf_name, "switchId": switch_id, "attach": False}
+            for vrf_name, switch_id in sorted(detach_keys)
+        ]
+
+    def _planned_attach_payloads(
+        self,
+        current: Dict[Tuple[str, str], Dict[str, Any]],
+        desired: Dict[Tuple[str, str], Dict[str, Any]],
+    ) -> List[Dict[str, Any]]:
+        """Compute attach payloads for missing or changed desired attachments."""
+        payloads: List[Dict[str, Any]] = []
+        for key, desired_payload in sorted(desired.items()):
+            existing = current.get(key)
+            if existing is None or not self._attachment_matches(existing, desired_payload):
+                payloads.append(desired_payload)
+        return payloads
+
+    def _attachment_matches(
+        self,
+        existing: Dict[str, Any],
+        desired: Dict[str, Any],
+    ) -> bool:
+        """Return True when existing attachment satisfies desired fields."""
+        if existing.get("attach") is not True:
+            return False
+        desired_instance = desired.get("instanceValues") or {}
+        if not desired_instance:
+            return True
+        existing_instance = existing.get("instanceValues") or {}
+        for key, value in desired_instance.items():
+            if existing_instance.get(key) != value:
+                return False
+        return True
+
+    def _post_vrf_attachments(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+        payloads: List[Dict[str, Any]],
+        deploy_targets: Dict[str, Set[str]],
+        operation_type: OperationType,
+    ) -> Dict[str, Any]:
+        """Send attach/detach payload and return mergeable API trace."""
+        request = VrfAttachDetachRequestModel(
+            attachments=[VrfAttachmentModel(**payload) for payload in payloads]
+        )
+        orchestrator, results = self._new_vrf_orchestrator(module_args, strategy)
+        endpoint = orchestrator._make_endpoint(EpManageFabricsVrfAttachmentsPost)
+        orchestrator._request(
+            path=endpoint.path,
+            verb=endpoint.verb,
+            data=request.to_payload(),
+            operation_type=operation_type,
+        )
+        return self._finalize_api_trace(results, deploy_targets)
+
+    def _record_deploy_target(
+        self,
+        deploy_targets: Dict[str, Set[str]],
+        vrf_name: Optional[str],
+        switch_id: Optional[str],
+    ) -> None:
+        """Record one VRF/switch pair for a later VRF deployment request."""
+        if not vrf_name or not switch_id:
+            return
+        deploy_targets.setdefault(vrf_name, set()).add(switch_id)
+
+    def _build_deploy_payloads(
+        self,
+        config: List[Dict],
+        *target_maps: Dict[str, Set[str]],
+    ) -> List[Dict[str, Any]]:
+        """Build deploy requests from one or more VRF/switch maps."""
+        deploy_targets: Dict[str, Set[str]] = {}
+        for target_map in target_maps:
+            for vrf_name, switch_ids in (target_map or {}).items():
+                deploy_targets.setdefault(vrf_name, set()).update(switch_ids)
+
+        if not deploy_targets:
+            return []
+
+        deploy_type = self._deploy_type_by_vrf(config)
+        payloads: List[Dict[str, Any]] = []
+        vrf_level_names: List[str] = []
+
+        for vrf_name in sorted(deploy_targets.keys()):
+            if deploy_type.get(vrf_name, "switch") == "vrf":
+                vrf_level_names.append(vrf_name)
+                continue
+            switch_ids = sorted(deploy_targets.get(vrf_name) or [])
+            if switch_ids:
+                payloads.append(
+                    VrfDeployRequestModel(
+                        vrf_names=[vrf_name],
+                        switch_ids=switch_ids,
+                    ).to_payload()
+                )
+            else:
+                vrf_level_names.append(vrf_name)
+
+        if vrf_level_names:
+            payloads.append(
+                VrfDeployRequestModel(vrf_names=sorted(vrf_level_names)).to_payload()
+            )
+
+        return payloads
+
+    def _build_pending_vrf_deploy_payloads(
+        self,
+        result: Dict[str, Any],
+        config: List[Dict],
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+    ) -> List[Dict[str, Any]]:
+        """Build a deploy request for configured VRFs already pending in ND."""
+        deploy_enabled = self._deploy_enabled_by_vrf(config)
+        deploy_type = self._deploy_type_by_vrf(config)
+        configured_vrfs = set(self._configured_vrf_names(config))
+        pending_statuses = {"pending", "inProgress"}
+        pending_vrfs: Set[str] = set()
+
+        for vrf in result.get("after") or []:
+            vrf_name = vrf.get("vrf_name") or vrf.get("vrfName")
+            vrf_status = vrf.get("vrf_status") or vrf.get("vrfStatus")
+            if not vrf_name or vrf_name not in configured_vrfs:
+                continue
+            if not deploy_enabled.get(vrf_name, True):
+                continue
+            if str(vrf_status or "").strip() in pending_statuses:
+                pending_vrfs.add(vrf_name)
+
+        if not pending_vrfs:
+            return []
+
+        vrf_level_names: Set[str] = set()
+        switch_level_names = {
+            vrf_name
+            for vrf_name in pending_vrfs
+            if deploy_type.get(vrf_name, "switch") == "switch"
+        }
+        vrf_level_names.update(pending_vrfs.difference(switch_level_names))
+
+        payloads: List[Dict[str, Any]] = []
+        if switch_level_names:
+            attachment_details = self._current_attachment_details(
+                module_args,
+                strategy,
+                sorted(switch_level_names),
+            )
+            switch_ids_by_vrf: Dict[str, Set[str]] = {
+                vrf_name: set() for vrf_name in switch_level_names
+            }
+            for attachment in attachment_details:
+                vrf_name = attachment.get("vrfName")
+                switch_id = attachment.get("switchId")
+                if vrf_name in switch_ids_by_vrf and switch_id:
+                    switch_ids_by_vrf[vrf_name].add(switch_id)
+
+            for vrf_name in sorted(switch_level_names):
+                switch_ids = sorted(switch_ids_by_vrf.get(vrf_name) or [])
+                if switch_ids:
+                    payloads.append(
+                        VrfDeployRequestModel(
+                            vrf_names=[vrf_name],
+                            switch_ids=switch_ids,
+                        ).to_payload()
+                    )
+                else:
+                    vrf_level_names.add(vrf_name)
+
+        if vrf_level_names:
+            payloads.append(
+                VrfDeployRequestModel(vrf_names=sorted(vrf_level_names)).to_payload()
+            )
+        return payloads
+
+    def _query_current_vrfs(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+    ) -> List[Dict[str, Any]]:
+        """Query current VRF records for the target fabric."""
+        orchestrator, results = self._new_vrf_orchestrator(module_args, strategy)
+        data = orchestrator.query_all()
+        results.build_final_result()
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict):
+            return data.get("vrfs") or data.get("items") or []
+        return []
+
+    def _wait_for_vrfs_delete_ready(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+    ) -> None:
+        """Wait until configured VRFs are absent or in notApplicable state."""
+        vrf_names = set(self._configured_vrf_names(module_args.get("config") or []))
+        if not vrf_names:
+            return
+
+        timeout = int(module_args.get("timeout") or self.module.params.get("timeout") or 30)
+        deadline = time.time() + timeout
+        ready_statuses = {"notApplicable", "NA", "na", ""}
+        last_statuses: Dict[str, str] = {}
+
+        while True:
+            vrfs = self._query_current_vrfs(module_args, strategy)
+            last_statuses = {}
+            for vrf in vrfs:
+                name = vrf.get("vrf_name") or vrf.get("vrfName")
+                if name in vrf_names:
+                    status = vrf.get("vrf_status") or vrf.get("vrfStatus") or ""
+                    last_statuses[name] = str(status)
+
+            if all(
+                name not in last_statuses or last_statuses[name] in ready_statuses
+                for name in vrf_names
+            ):
+                return
+
+            if time.time() >= deadline:
+                self.module.fail_json(
+                    msg=(
+                        "Timed out waiting for VRFs to become deletable after "
+                        f"detach deployment on fabric '{strategy.fabric_name}': "
+                        f"{last_statuses}"
+                    )
+                )
+            time.sleep(5)
+
+    def _deploy_vrf_attachments(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+        deploy_payload: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Deploy pending VRF attachment changes once."""
+        orchestrator, results = self._new_vrf_orchestrator(module_args, strategy)
+        endpoint = orchestrator._make_endpoint(EpManageFabricsVrfActionsDeployPost)
+        orchestrator._request(
+            path=endpoint.path,
+            verb=endpoint.verb,
+            data=deploy_payload,
+            operation_type=OperationType.UPDATE,
+        )
+        return self._finalize_api_trace(results)
+
+    # ── Child task runner ─────────────────────────────────────────
+
+    def _run_child_task(self, child_task: Dict) -> Dict[str, Any]:
+        """
+        Execute a child fabric VRF task via its own orchestrator instance.
+
+        Builds the child strategy from the ``fabric_details`` injected by the
+        parent strategy's ``build_child_task_args()``, then runs
+        ``_run_state_machine`` with that strategy.  No module re-invocation
+        or subprocess is needed — the same state machine path used for
+        standalone and parent fabrics is reused here.
+        """
+        module_args = child_task["module_args"]
+        child_strategy = child_task["strategy"]
+        result = self._run_state_machine(module_args, strategy=child_strategy)
+        result.setdefault("fabric_type", child_strategy.fabric_type)
+        return result
+
+    # ── Result aggregation ────────────────────────────────────────
+
+    def _scoped_fabric_result(
+        self,
+        result: Dict[str, Any],
+        fabric: str,
+        fabric_type: str,
+    ) -> Dict[str, Any]:
+        """
+        Return a parent/child scoped result without dropping state-machine data.
+
+        NDStateMachine already formats standalone results with before/after,
+        diff, and API trace fields.  Parent workflows should expose that same
+        shape under parent_fabric and each child_fabrics entry.
+        """
+        scoped = copy.deepcopy(result)
+        scoped.pop("child_fabric", None)
+        scoped["fabric"] = fabric
+        scoped["fabric_type"] = fabric_type
+        scoped.setdefault("invocation", result.get("invocation"))
+        return scoped
+
+    def _build_structured_result(
+        self,
+        parent_result: Dict,
+        child_results: List[Dict],
+        parent_fabric: str,
+        fabric_type: str,
+        log_type: str,
+    ) -> Dict[str, Any]:
+        """
+        Combine parent and child results into a single structured response dict.
+
+        Parent-only (no children processed):
+            Augments parent_result with fabric_type and workflow metadata.
+
+        Parent-with-children:
+            Returns a comprehensive dict with separate parent_fabric and
+            child_fabrics sections, plus aggregated changed / failed status.
+        """
+        if not child_results:
+            parent_result.setdefault("fabric_type", fabric_type)
+            parent_result.setdefault(
+                "workflow",
+                f"{log_type.capitalize()} Parent without Child Fabric Processing",
+            )
+            return parent_result
+
+        structured: Dict[str, Any] = {
+            "changed": parent_result.get("changed", False),
+            "failed": parent_result.get("failed", False),
+            "fabric_type": fabric_type,
+            "workflow": f"{log_type.capitalize()} Parent with Child Fabric Processing",
+            "parent_fabric": self._scoped_fabric_result(
+                parent_result,
+                parent_fabric,
+                fabric_type,
+            ),
+            "child_fabrics": [],
+        }
+
+        for child_result in child_results:
+            child_entry = self._scoped_fabric_result(
+                child_result,
+                child_result.get("child_fabric"),
+                child_result.get("fabric_type", "standalone"),
+            )
+            structured["child_fabrics"].append(child_entry)
+
+            if child_result.get("changed", False):
+                structured["changed"] = True
+
+            if child_result.get("failed", False):
+                structured["failed"] = True
+                structured["msg"] = (
+                    f"Child fabric task failed for "
+                    f"'{child_result.get('child_fabric')}': "
+                    f"{child_result.get('msg', 'Unknown error')}"
+                )
+
+        return structured

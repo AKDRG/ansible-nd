@@ -16,7 +16,7 @@ short_description: Manages VRF definitions on Cisco Nexus Dashboard.
 description:
   - Manages VRF definitions on Cisco Nexus Dashboard across standalone,
     Multisite (MSD), and Multicluster (MFD) fabric topologies.
-  - This module manages *VRF definitions only* (identity, templates,
+  - This module manages *VRF definitions only* (identity, custom templates,
     VLAN/SVI, TRM, routing, netflow, route targets). VRF attachment and
     deployment to switches is handled by a separate module.
   - Automatically detects fabric type from the ND API and routes to the
@@ -53,8 +53,8 @@ options:
       - Each element defines a VRF with identity, template, VLAN/SVI,
         routing, TRM, and other settings.
       - For parent fabrics each item may include a C(child_fabric_config)
-        list to provide per-child-fabric overrides (VLAN, TRM, BGP auth,
-        netflow, route targets).
+        list to provide per-child-fabric overrides (TRM, BGP auth,
+        netflow, and MVPN route targets).
     type: list
     elements: dict
     required: true
@@ -66,17 +66,46 @@ options:
       vrf_id:
         description: L3 VNI (VRF segment ID), 1-16777214.
         type: int
-      vrf_template:
-        description: Config template for the VRF.
+      vrf_type:
+        description:
+          - VRF schema type.
+          - Leave unset to derive the value from the fabric C(management.type).
+          - Set to V(userDefined) to use custom VRF template fields.
         type: str
-        default: Default_VRF_Universal
-      vrf_extension_template:
-        description: Config template for the VRF extension.
+        choices:
+          - userDefined
+          - vxlan
+          - vxlanIbgp
+          - vxlanEbgp
+          - vxlanCampus
+          - aimlVxlanIbgp
+          - aimlVxlanEbgp
+          - classicLanEnhanced
+          - vxlanAci
+          - aci
+          - externalConnectivity
+          - vxlanExternal
+      vrf_template_name:
+        description:
+          - Custom VRF template name.
+          - Supported only when C(vrf_type=userDefined).
         type: str
-        default: Default_VRF_Extension_Universal
-      service_vrf_template:
-        description: Service config template for the VRF.
+      vrf_extension_template_name:
+        description:
+          - Custom VRF extension template name.
+          - Supported only when C(vrf_type=userDefined).
         type: str
+      service_vrf_template_name:
+        description:
+          - Custom service VRF template name.
+          - Supported only when C(vrf_type=userDefined).
+        type: str
+      vrf_template_config:
+        description:
+          - Custom VRF template parameters.
+          - Supported only when C(vrf_type=userDefined).
+          - Values must be strings as required by the ND schema.
+        type: dict
       vlan_id:
         description: VLAN ID for the VRF SVI (2-4094). Not used when C(l3vni_wo_vlan=true).
         type: int
@@ -203,12 +232,72 @@ options:
       nf_monitor:
         description: Netflow monitor name. Required when C(netflow_enable=true).
         type: str
+      deploy:
+        description:
+          - Deploy pending VRF attachment changes for this VRF.
+          - For parent fabrics, deployment is performed once after all child
+            fabric tasks complete.
+          - Applies only to parent/standalone VRF attachments, not child fabric
+            override entries.
+        type: bool
+        default: true
+      deploy_type:
+        description:
+          - Scope of the deploy operation when C(deploy=true).
+          - C(switch) deploys only the switches affected by this VRF attachment
+            operation when switch identifiers are available.
+          - C(vrf) deploys the pending VRF changes for this VRF.
+        type: str
+        default: switch
+        choices:
+          - switch
+          - vrf
+      attach:
+        description:
+          - Parent/standalone switch attachment entries for this VRF.
+          - Switches are identified by management IP address and resolved to
+            ND C(switchId) values before the attachment payload is sent.
+          - Not supported under C(child_fabric_config).
+        type: list
+        elements: dict
+        suboptions:
+          ip_address:
+            description: Management IP address of the switch to attach.
+            type: str
+            required: true
+          loopback_id:
+            description: Attachment loopback interface identifier, 0-1023.
+            type: int
+          loopback_ipv4_address:
+            description: Attachment loopback IPv4 address.
+            type: str
+          loopback_ipv6_address:
+            description: Attachment loopback IPv6 address.
+            type: str
+          import_vpn_rt:
+            description: Attachment-level VPN import route targets.
+            type: list
+            elements: str
+          export_vpn_rt:
+            description: Attachment-level VPN export route targets.
+            type: list
+            elements: str
+          import_evpn_rt:
+            description: Attachment-level EVPN import route targets.
+            type: list
+            elements: str
+          export_evpn_rt:
+            description: Attachment-level EVPN export route targets.
+            type: list
+            elements: str
       child_fabric_config:
         description:
           - Per-child-fabric override entries (parent fabrics only).
           - Each entry targets a child member fabric and may override
-            VLAN, TRM, BGP auth, netflow, and route-target settings.
+            TRM, advertising, BGP auth, netflow, and MVPN route-target settings.
           - Omitted fields inherit the parent VRF setting.
+          - Ignored when C(state=deleted); child fabric tasks are not executed
+            for delete operations.
         type: list
         elements: dict
         suboptions:
@@ -219,18 +308,6 @@ options:
           l3vni_wo_vlan:
             description: Enable L3VNI without VLAN on this child fabric.
             type: bool
-          vlan_id:
-            description: Override VLAN ID for this child fabric (2-4094).
-            type: int
-          vrf_vlan_name:
-            description: Override VLAN name for this child fabric.
-            type: str
-          vrf_intf_desc:
-            description: Override VRF SVI interface description.
-            type: str
-          vrf_int_mtu:
-            description: Override VRF SVI interface MTU (68-9216).
-            type: int
           trm_enable:
             description: Enable Tenant Routed Multicast on this child fabric.
             type: bool
@@ -285,22 +362,6 @@ options:
           nf_monitor:
             description: Netflow monitor name.
             type: str
-          import_vpn_rt:
-            description: VPN import route targets.
-            type: list
-            elements: str
-          export_vpn_rt:
-            description: VPN export route targets.
-            type: list
-            elements: str
-          import_evpn_rt:
-            description: EVPN import route targets.
-            type: list
-            elements: str
-          export_evpn_rt:
-            description: EVPN export route targets.
-            type: list
-            elements: str
 extends_documentation_fragment:
   - cisco.nd.modules
   - cisco.nd.check_mode
@@ -332,20 +393,19 @@ EXAMPLES = r"""
         underlay_mcast_ip: 239.1.1.1
         overlay_mcast_group: 239.1.1.2
 
-# ── Parent fabric — create VRF with child overrides ──────────────────────────
-- name: Create VRF on MSD parent with per-child VLAN overrides
+# ── Parent fabric — create VRF with child fabric-instance overrides ──────────
+- name: Create VRF on MSD parent with per-child fabric-instance overrides
   cisco.nd.nd_vrf:
     fabric: msd_parent
     state: merged
     config:
       - vrf_name: VRF_BLUE
         vrf_id: 50010
-        vlan_id: 2001
         child_fabric_config:
           - fabric: child_fabric_1
-            vlan_id: 2101
+            adv_host_routes: true
           - fabric: child_fabric_2
-            vlan_id: 2102
+            adv_default_routes: false
 
 # ── Child fabric — query only ────────────────────────────────────────────────
 - name: Query VRFs on a child fabric (write ops must go through parent)

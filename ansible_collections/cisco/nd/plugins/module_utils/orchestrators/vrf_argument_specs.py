@@ -11,6 +11,10 @@ files can import them at the top level without creating a circular dependency
 (nd_vrf.py → strategies → nd_vrf.py).
 """
 
+from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.enums import (
+    VrfType,
+)
+
 
 def _route_target_spec():
     """Argument spec fragment for a route-target list field."""
@@ -47,16 +51,32 @@ def _trm_fields_spec(defaults=True):
     )
 
 
+def _attachment_spec():
+    """Argument spec for one entry inside attach."""
+    return dict(
+        ip_address=dict(type="str", required=True),
+        loopback_id=dict(type="int"),
+        loopback_ipv4_address=dict(type="str"),
+        loopback_ipv6_address=dict(type="str"),
+        import_vpn_rt=_route_target_spec(),
+        export_vpn_rt=_route_target_spec(),
+        import_evpn_rt=_route_target_spec(),
+        export_evpn_rt=_route_target_spec(),
+    )
+
+
 def vrf_base_argument_spec():
     """Argument spec for a single VRF config entry (standalone fabrics)."""
     spec = dict(
         # Identity
         vrf_name=dict(type="str", required=True),
         vrf_id=dict(type="int"),
-        # Templates
-        vrf_template=dict(type="str", default="Default_VRF_Universal"),
-        vrf_extension_template=dict(type="str", default="Default_VRF_Extension_Universal"),
-        service_vrf_template=dict(type="str"),
+        vrf_type=dict(type="str", choices=VrfType.choices()),
+        # Custom/user-defined VRF template fields
+        vrf_template_name=dict(type="str"),
+        vrf_extension_template_name=dict(type="str"),
+        service_vrf_template_name=dict(type="str"),
+        vrf_template_config=dict(type="dict"),
         # VLAN / SVI
         vlan_id=dict(type="int"),
         vrf_vlan_name=dict(type="str"),
@@ -88,6 +108,14 @@ def vrf_base_argument_spec():
         # Netflow
         netflow_enable=dict(type="bool", default=False),
         nf_monitor=dict(type="str"),
+        # Attachment/deploy controls
+        deploy=dict(type="bool", default=True),
+        deploy_type=dict(type="str", default="switch", choices=["switch", "vrf"]),
+        attach=dict(
+            type="list",
+            elements="dict",
+            options=_attachment_spec(),
+        ),
     )
     spec.update(_trm_fields_spec(defaults=True))
     return spec
@@ -100,11 +128,6 @@ def _child_fabric_config_element_spec():
         fabric=dict(type="str", required=True),
         # L3VNI without VLAN
         l3vni_wo_vlan=dict(type="bool"),
-        # VLAN / SVI overrides
-        vlan_id=dict(type="int"),
-        vrf_vlan_name=dict(type="str"),
-        vrf_intf_desc=dict(type="str"),
-        vrf_int_mtu=dict(type="int"),
         # Advertising overrides
         adv_host_routes=dict(type="bool"),
         adv_default_routes=dict(type="bool"),
@@ -115,11 +138,6 @@ def _child_fabric_config_element_spec():
         # Netflow overrides
         netflow_enable=dict(type="bool"),
         nf_monitor=dict(type="str"),
-        # Route-target overrides
-        import_vpn_rt=_route_target_spec(),
-        export_vpn_rt=_route_target_spec(),
-        import_evpn_rt=_route_target_spec(),
-        export_evpn_rt=_route_target_spec(),
     )
     spec.update(_trm_fields_spec(defaults=False))
     return spec

@@ -27,7 +27,7 @@ try:
 except ImportError:
     from typing_extensions import Self  # type: ignore[assignment]
 
-from typing import ClassVar, List, Optional, Union
+from typing import ClassVar, Dict, List, Optional, Union
 
 from ansible_collections.cisco.nd.plugins.module_utils.common.pydantic_compat import (
     Field,
@@ -41,6 +41,98 @@ from ansible_collections.cisco.nd.plugins.module_utils.models.nested import (
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.validators import (
     VrfValidators,
 )
+from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.enums import (
+    VrfType,
+)
+
+
+_CUSTOM_VRF_TEMPLATE_FIELDS = (
+    "service_vrf_template_name",
+    "vrf_template_name",
+    "vrf_extension_template_name",
+    "vrf_template_config",
+)
+
+
+# =============================================================================
+# VrfAttachmentConfigModel — playbook-facing VRF attachment entry
+# =============================================================================
+
+
+class VrfAttachmentConfigModel(NDNestedModel):
+    """
+    Playbook-facing VRF attachment entry.
+
+    The public config accepts switch management IPs.  The workflow resolves
+    those IPs to switchId values before sending the ND attachment payload.
+    """
+
+    identifiers: ClassVar[List[str]] = []
+
+    ip_address: str = Field(
+        alias="ipAddress",
+        description="Management IP address of the switch to attach this VRF to",
+    )
+    loopback_id: Optional[int] = Field(
+        default=None,
+        alias="loopbackId",
+        ge=0,
+        le=1023,
+        description="Attachment loopback interface identifier (0-1023)",
+    )
+    loopback_ipv4_address: Optional[str] = Field(
+        default=None,
+        alias="loopbackIpv4Address",
+        description="Attachment loopback IPv4 address",
+    )
+    loopback_ipv6_address: Optional[str] = Field(
+        default=None,
+        alias="loopbackIpv6Address",
+        description="Attachment loopback IPv6 address",
+    )
+    import_vpn_rt: Optional[List[str]] = Field(
+        default=None,
+        alias="importVpnRt",
+        description="Attachment-level VPN import route targets",
+    )
+    export_vpn_rt: Optional[List[str]] = Field(
+        default=None,
+        alias="exportVpnRt",
+        description="Attachment-level VPN export route targets",
+    )
+    import_evpn_rt: Optional[List[str]] = Field(
+        default=None,
+        alias="importEvpnRt",
+        description="Attachment-level EVPN import route targets",
+    )
+    export_evpn_rt: Optional[List[str]] = Field(
+        default=None,
+        alias="exportEvpnRt",
+        description="Attachment-level EVPN export route targets",
+    )
+
+    @field_validator("ip_address", "loopback_ipv4_address", mode="before")
+    @classmethod
+    def _validate_ipv4(cls, v: Optional[str]) -> Optional[str]:
+        return VrfValidators.validate_ipv4_address(v)
+
+    @field_validator("loopback_ipv6_address", mode="before")
+    @classmethod
+    def _validate_ipv6(cls, v: Optional[str]) -> Optional[str]:
+        return VrfValidators.validate_ipv6_address(v)
+
+    @field_validator(
+        "import_vpn_rt",
+        "export_vpn_rt",
+        "import_evpn_rt",
+        "export_evpn_rt",
+        mode="before",
+    )
+    @classmethod
+    def _normalize_rt(
+        cls, v: Optional[Union[str, List[str]]]
+    ) -> Optional[List[str]]:
+        return VrfValidators.normalize_route_targets(v)
 
 
 # =============================================================================
@@ -53,8 +145,8 @@ class VrfChildConfigModel(NDNestedModel):
     Per-child-fabric override entry within a parent VRF config.
 
     Identifies a child fabric by name and provides optional per-fabric
-    overrides for VLAN, TRM, advertising, BGP authentication, netflow,
-    and route-target settings.
+    overrides for fabric-instance settings such as TRM, advertising,
+    BGP authentication, netflow, and MVPN route-target settings.
 
     All fields except ``fabric`` are optional; absent fields mean "inherit
     the parent setting".
@@ -76,33 +168,6 @@ class VrfChildConfigModel(NDNestedModel):
         default=None,
         alias="l3vniWoVlan",
         description="Enable L3VNI without VLAN on this child fabric",
-    )
-
-    # --- VLAN / SVI overrides ---
-
-    vlan_id: Optional[int] = Field(
-        default=None,
-        alias="vlanId",
-        ge=2,
-        le=4094,
-        description="VLAN ID for the VRF SVI in this child fabric (2–4094)",
-    )
-    vrf_vlan_name: Optional[str] = Field(
-        default=None,
-        alias="vrfVlanName",
-        description="VLAN name for the VRF SVI",
-    )
-    vrf_intf_desc: Optional[str] = Field(
-        default=None,
-        alias="vrfIntfDesc",
-        description="Description for the VRF SVI interface",
-    )
-    vrf_int_mtu: Optional[int] = Field(
-        default=None,
-        alias="vrfIntMtu",
-        ge=68,
-        le=9216,
-        description="MTU for the VRF SVI interface (68–9216)",
     )
 
     # --- TRM overrides ---
@@ -220,37 +285,9 @@ class VrfChildConfigModel(NDNestedModel):
         description="Netflow monitor name; required when netflow_enable=True",
     )
 
-    # --- Route-target overrides ---
-
-    import_vpn_rt: Optional[List[str]] = Field(
-        default=None,
-        alias="importVpnRt",
-        description="VPN import route targets (comma-separated string or list)",
-    )
-    export_vpn_rt: Optional[List[str]] = Field(
-        default=None,
-        alias="exportVpnRt",
-        description="VPN export route targets (comma-separated string or list)",
-    )
-    import_evpn_rt: Optional[List[str]] = Field(
-        default=None,
-        alias="importEvpnRt",
-        description="EVPN import route targets (comma-separated string or list)",
-    )
-    export_evpn_rt: Optional[List[str]] = Field(
-        default=None,
-        alias="exportEvpnRt",
-        description="EVPN export route targets (comma-separated string or list)",
-    )
-
     # ------------------------------------------------------------------
     # Field validators
     # ------------------------------------------------------------------
-
-    @field_validator("vrf_vlan_name", mode="before")
-    @classmethod
-    def _validate_vrf_vlan_name(cls, v: Optional[str]) -> Optional[str]:
-        return VrfValidators.validate_vrf_vlan_name(v)
 
     @field_validator("rp_address", "underlay_mcast_ip", mode="before")
     @classmethod
@@ -268,10 +305,6 @@ class VrfChildConfigModel(NDNestedModel):
         return VrfValidators.validate_bgp_passwd_encrypt(v)
 
     @field_validator(
-        "import_vpn_rt",
-        "export_vpn_rt",
-        "import_evpn_rt",
-        "export_evpn_rt",
         "import_mvpn_rt",
         "export_mvpn_rt",
         mode="before",
@@ -376,23 +409,39 @@ class VrfConfigModel(NDBaseModel):
         le=16777214,
         description="L3 VNI (VRF segment ID), 1–16777214",
     )
-
-    # --- VRF templates ---
-
-    vrf_template: str = Field(
-        default="Default_VRF_Universal",
-        alias="vrfTemplate",
-        description="Name of the config template for the VRF",
-    )
-    vrf_extension_template: str = Field(
-        default="Default_VRF_Extension_Universal",
-        alias="vrfExtensionTemplate",
-        description="Name of the config template for the VRF extension",
-    )
-    service_vrf_template: Optional[str] = Field(
+    vrf_type: Optional[str] = Field(
         default=None,
-        alias="serviceVrfTemplate",
-        description="Name of the service config template for the VRF",
+        alias="vrfType",
+        description=(
+            "VRF schema type. Leave unset to derive it from fabric "
+            "management.type; set to userDefined for custom template VRFs"
+        ),
+    )
+
+    # --- Custom/user-defined VRF templates ---
+
+    service_vrf_template_name: Optional[str] = Field(
+        default=None,
+        alias="serviceVrfTemplateName",
+        description="Service VRF template name for userDefined VRFs",
+    )
+    vrf_template_name: Optional[str] = Field(
+        default=None,
+        alias="vrfTemplateName",
+        description="VRF template name for userDefined VRFs",
+    )
+    vrf_extension_template_name: Optional[str] = Field(
+        default=None,
+        alias="vrfExtensionTemplateName",
+        description="VRF extension template name for userDefined VRFs",
+    )
+    vrf_template_config: Optional[Dict[str, str]] = Field(
+        default=None,
+        alias="vrfTemplateConfig",
+        description=(
+            "Template parameter values for userDefined VRFs. Schema requires "
+            "a JSON object with string values"
+        ),
     )
 
     # --- VLAN / SVI ---
@@ -642,6 +691,26 @@ class VrfConfigModel(NDBaseModel):
         description="Netflow monitor name; required when netflow_enable=True",
     )
 
+    # --- Attachment / deploy controls ---
+
+    deploy: bool = Field(
+        default=True,
+        description="Deploy VRF attachment changes for this VRF",
+    )
+    deploy_type: str = Field(
+        default="switch",
+        alias="deployType",
+        description=(
+            "Deploy scope for pending VRF attachment changes. Use 'switch' "
+            "to deploy only affected switches, or 'vrf' to deploy the VRF "
+            "across all pending switches."
+        ),
+    )
+    attach: Optional[List[VrfAttachmentConfigModel]] = Field(
+        default=None,
+        description="Switch attachment entries for this VRF",
+    )
+
     # ------------------------------------------------------------------
     # Field validators
     # ------------------------------------------------------------------
@@ -650,6 +719,45 @@ class VrfConfigModel(NDBaseModel):
     @classmethod
     def _validate_vrf_name(cls, v: str) -> str:
         return VrfValidators.require_vrf_name(v)
+
+    @field_validator("vrf_type", mode="before")
+    @classmethod
+    def _validate_vrf_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = str(v).strip()
+        if v not in VrfType.choices():
+            raise ValueError(
+                f"vrf_type must be one of {VrfType.choices()}, got: {v}"
+            )
+        return v
+
+    @field_validator("deploy_type", mode="before")
+    @classmethod
+    def _validate_deploy_type(cls, v: Optional[str]) -> str:
+        if v is None:
+            return "switch"
+        v = str(v).strip()
+        if v not in ("switch", "vrf"):
+            raise ValueError("deploy_type must be one of ['switch', 'vrf']")
+        return v
+
+    @field_validator("vrf_template_config", mode="before")
+    @classmethod
+    def _validate_vrf_template_config(
+        cls, v: Optional[Dict[str, str]]
+    ) -> Optional[Dict[str, str]]:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            raise ValueError("vrf_template_config must be a dictionary")
+        bad = [key for key, value in v.items() if not isinstance(value, str)]
+        if bad:
+            raise ValueError(
+                "vrf_template_config values must be strings for keys: "
+                f"{', '.join(str(key) for key in bad)}"
+            )
+        return v
 
     @field_validator("vrf_vlan_name", mode="before")
     @classmethod
@@ -705,6 +813,21 @@ class VrfConfigModel(NDBaseModel):
                     f"The following fields must not be set when "
                     f"l3vni_wo_vlan=True: {', '.join(set_fields)}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _check_custom_vrf_template_fields(self) -> Self:
+        """Custom template fields are valid only for vrf_type=userDefined."""
+        set_fields = [
+            field
+            for field in _CUSTOM_VRF_TEMPLATE_FIELDS
+            if getattr(self, field) is not None
+        ]
+        if set_fields and self.vrf_type != VrfType.USER_DEFINED.value:
+            raise ValueError(
+                "The following fields require vrf_type=userDefined: "
+                f"{', '.join(set_fields)}"
+            )
         return self
 
     @model_validator(mode="after")
@@ -772,8 +895,8 @@ class VrfParentConfigModel(NDBaseModel):
     """
     Playbook-facing VRF configuration model for parent (MSD / MFD) fabrics.
 
-    Carries identity, template, and shared VRF properties. Per-fabric VLAN,
-    advertising, BGP-auth and netflow overrides belong in
+    Carries identity, template, and shared VRF properties. Per-fabric
+    advertising, BGP-auth, netflow, TRM, and MVPN route-target overrides belong in
     ``child_fabric_config`` entries (``VrfChildConfigModel``).
 
     Cross-field TRM and bgp_password dependencies are validated identically
@@ -800,23 +923,39 @@ class VrfParentConfigModel(NDBaseModel):
         le=16777214,
         description="L3 VNI (VRF segment ID), 1–16777214",
     )
-
-    # --- VRF templates ---
-
-    vrf_template: str = Field(
-        default="Default_VRF_Universal",
-        alias="vrfTemplate",
-        description="Name of the config template for the VRF",
-    )
-    vrf_extension_template: str = Field(
-        default="Default_VRF_Extension_Universal",
-        alias="vrfExtensionTemplate",
-        description="Name of the config template for the VRF extension",
-    )
-    service_vrf_template: Optional[str] = Field(
+    vrf_type: Optional[str] = Field(
         default=None,
-        alias="serviceVrfTemplate",
-        description="Name of the service config template for the VRF",
+        alias="vrfType",
+        description=(
+            "VRF schema type. Leave unset to derive it from fabric "
+            "management.type; set to userDefined for custom template VRFs"
+        ),
+    )
+
+    # --- Custom/user-defined VRF templates ---
+
+    service_vrf_template_name: Optional[str] = Field(
+        default=None,
+        alias="serviceVrfTemplateName",
+        description="Service VRF template name for userDefined VRFs",
+    )
+    vrf_template_name: Optional[str] = Field(
+        default=None,
+        alias="vrfTemplateName",
+        description="VRF template name for userDefined VRFs",
+    )
+    vrf_extension_template_name: Optional[str] = Field(
+        default=None,
+        alias="vrfExtensionTemplateName",
+        description="VRF extension template name for userDefined VRFs",
+    )
+    vrf_template_config: Optional[Dict[str, str]] = Field(
+        default=None,
+        alias="vrfTemplateConfig",
+        description=(
+            "Template parameter values for userDefined VRFs. Schema requires "
+            "a JSON object with string values"
+        ),
     )
 
     # --- L3VNI without VLAN ---
@@ -825,8 +964,7 @@ class VrfParentConfigModel(NDBaseModel):
         default=False,
         alias="l3vniWoVlan",
         description=(
-            "Configure L3VNI without VLAN/SVI across all member fabrics. "
-            "Per-fabric VLAN settings are still possible in child_fabric_config"
+            "Configure L3VNI without VLAN/SVI across all member fabrics"
         ),
     )
 
@@ -986,6 +1124,26 @@ class VrfParentConfigModel(NDBaseModel):
             "deployments"
         ),
     )
+    deploy: bool = Field(
+        default=True,
+        description=(
+            "Deploy parent VRF attachment changes once after all child fabric "
+            "tasks complete"
+        ),
+    )
+    deploy_type: str = Field(
+        default="switch",
+        alias="deployType",
+        description=(
+            "Deploy scope for parent VRF attachment changes. Use 'switch' "
+            "to deploy only affected switches, or 'vrf' to deploy the VRF "
+            "across all pending switches."
+        ),
+    )
+    attach: Optional[List[VrfAttachmentConfigModel]] = Field(
+        default=None,
+        description="Parent-level switch attachment entries for this VRF",
+    )
 
     # ------------------------------------------------------------------
     # Field validators
@@ -995,6 +1153,45 @@ class VrfParentConfigModel(NDBaseModel):
     @classmethod
     def _validate_vrf_name(cls, v: str) -> str:
         return VrfValidators.require_vrf_name(v)
+
+    @field_validator("vrf_type", mode="before")
+    @classmethod
+    def _validate_vrf_type(cls, v: Optional[str]) -> Optional[str]:
+        if v is None:
+            return None
+        v = str(v).strip()
+        if v not in VrfType.choices():
+            raise ValueError(
+                f"vrf_type must be one of {VrfType.choices()}, got: {v}"
+            )
+        return v
+
+    @field_validator("deploy_type", mode="before")
+    @classmethod
+    def _validate_deploy_type(cls, v: Optional[str]) -> str:
+        if v is None:
+            return "switch"
+        v = str(v).strip()
+        if v not in ("switch", "vrf"):
+            raise ValueError("deploy_type must be one of ['switch', 'vrf']")
+        return v
+
+    @field_validator("vrf_template_config", mode="before")
+    @classmethod
+    def _validate_vrf_template_config(
+        cls, v: Optional[Dict[str, str]]
+    ) -> Optional[Dict[str, str]]:
+        if v is None:
+            return None
+        if not isinstance(v, dict):
+            raise ValueError("vrf_template_config must be a dictionary")
+        bad = [key for key, value in v.items() if not isinstance(value, str)]
+        if bad:
+            raise ValueError(
+                "vrf_template_config values must be strings for keys: "
+                f"{', '.join(str(key) for key in bad)}"
+            )
+        return v
 
     @field_validator("rp_address", "underlay_mcast_ip", mode="before")
     @classmethod
@@ -1046,6 +1243,21 @@ class VrfParentConfigModel(NDBaseModel):
                     f"The following fields require trm_enable=True: "
                     f"{', '.join(set_fields)}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _check_custom_vrf_template_fields(self) -> Self:
+        """Custom template fields are valid only for vrf_type=userDefined."""
+        set_fields = [
+            field
+            for field in _CUSTOM_VRF_TEMPLATE_FIELDS
+            if getattr(self, field) is not None
+        ]
+        if set_fields and self.vrf_type != VrfType.USER_DEFINED.value:
+            raise ValueError(
+                "The following fields require vrf_type=userDefined: "
+                f"{', '.join(set_fields)}"
+            )
         return self
 
     @model_validator(mode="after")
