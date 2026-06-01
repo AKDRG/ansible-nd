@@ -517,7 +517,12 @@ def main():
             default="merged",
             choices=["merged", "replaced", "overridden", "deleted", "query"],
         ),
-        config=dict(type="list", elements="dict", required=True),
+        config=dict(
+            type="list",
+            elements="dict",
+            required=True,
+            options=vrf_parent_argument_spec(),
+        ),
     )
 
     module = AnsibleModule(

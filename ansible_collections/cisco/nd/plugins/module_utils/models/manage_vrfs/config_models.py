@@ -27,7 +27,7 @@ try:
 except ImportError:
     from typing_extensions import Self  # type: ignore[assignment]
 
-from typing import ClassVar, Dict, List, Optional, Union
+from typing import ClassVar, Dict, List, Literal, Optional, Union
 
 from ansible_collections.cisco.nd.plugins.module_utils.common.pydantic_compat import (
     Field,
@@ -442,6 +442,23 @@ class VrfConfigModel(NDBaseModel):
             "Template parameter values for userDefined VRFs. Schema requires "
             "a JSON object with string values"
         ),
+    )
+
+    # --- Security group ---
+
+    default_security_action: Optional[
+        Literal["unenforcedOrNone", "enforcedPermit", "enforcedDeny"]
+    ] = Field(
+        default=None,
+        alias="defaultSecurityAction",
+        description="Default security group enforcement action",
+    )
+    default_security_group_tag: Optional[int] = Field(
+        default=None,
+        alias="defaultSecurityGroupTag",
+        ge=16,
+        le=65535,
+        description="Default security group tag ID",
     )
 
     # --- VLAN / SVI ---
@@ -958,6 +975,61 @@ class VrfParentConfigModel(NDBaseModel):
         ),
     )
 
+    # --- Security group ---
+
+    default_security_action: Optional[
+        Literal["unenforcedOrNone", "enforcedPermit", "enforcedDeny"]
+    ] = Field(
+        default=None,
+        alias="defaultSecurityAction",
+        description="Default security group enforcement action",
+    )
+    default_security_group_tag: Optional[int] = Field(
+        default=None,
+        alias="defaultSecurityGroupTag",
+        ge=16,
+        le=65535,
+        description="Default security group tag ID",
+    )
+
+    # --- VLAN / SVI ---
+
+    vlan_id: Optional[int] = Field(
+        default=None,
+        alias="vlanId",
+        ge=2,
+        le=4094,
+        description=(
+            "VLAN ID for the VRF SVI (2–4094); "
+            "not used when l3vni_wo_vlan=True"
+        ),
+    )
+    vrf_vlan_name: Optional[str] = Field(
+        default=None,
+        alias="vrfVlanName",
+        description=(
+            "VLAN name for the VRF SVI; not used when l3vni_wo_vlan=True"
+        ),
+    )
+    vrf_intf_desc: Optional[str] = Field(
+        default=None,
+        alias="vrfIntfDesc",
+        description=(
+            "Description for the VRF SVI interface; "
+            "not used when l3vni_wo_vlan=True"
+        ),
+    )
+    vrf_int_mtu: int = Field(
+        default=9216,
+        alias="vrfIntMtu",
+        ge=68,
+        le=9216,
+        description=(
+            "MTU for the VRF SVI interface (68–9216); "
+            "not used when l3vni_wo_vlan=True"
+        ),
+    )
+
     # --- L3VNI without VLAN ---
 
     l3vni_wo_vlan: bool = Field(
@@ -1114,6 +1186,55 @@ class VrfParentConfigModel(NDBaseModel):
         ),
     )
 
+    # --- Advertising ---
+
+    adv_host_routes: bool = Field(
+        default=False,
+        alias="advHostRoutes",
+        description="Advertise /32 and /128 host routes to edge routers",
+    )
+    adv_default_routes: bool = Field(
+        default=True,
+        alias="advDefaultRoutes",
+        description="Advertise default route internally",
+    )
+    static_default_route: bool = Field(
+        default=True,
+        alias="staticDefaultRoute",
+        description="Configure static default route",
+    )
+
+    # --- BGP authentication ---
+
+    bgp_password: Optional[str] = Field(
+        default=None,
+        alias="bgpPassword",
+        min_length=4,
+        max_length=32,
+        description="BGP neighbour password (4–32 characters)",
+    )
+    bgp_passwd_encrypt: Optional[int] = Field(
+        default=None,
+        alias="bgpPasswdEncrypt",
+        description=(
+            "BGP password encryption type: 3 (3DES) or 7 (Cisco Type-7); "
+            "required when bgp_password is set"
+        ),
+    )
+
+    # --- Netflow ---
+
+    netflow_enable: bool = Field(
+        default=False,
+        alias="netflowEnable",
+        description="Enable netflow on VRF-Lite sub-interface",
+    )
+    nf_monitor: Optional[str] = Field(
+        default=None,
+        alias="nfMonitor",
+        description="Netflow monitor name; required when netflow_enable=True",
+    )
+
     # --- Child fabric configs ---
 
     child_fabric_config: Optional[List[VrfChildConfigModel]] = Field(
@@ -1193,6 +1314,11 @@ class VrfParentConfigModel(NDBaseModel):
             )
         return v
 
+    @field_validator("vrf_vlan_name", mode="before")
+    @classmethod
+    def _validate_vrf_vlan_name(cls, v: Optional[str]) -> Optional[str]:
+        return VrfValidators.validate_vrf_vlan_name(v)
+
     @field_validator("rp_address", "underlay_mcast_ip", mode="before")
     @classmethod
     def _validate_ipv4(cls, v: Optional[str]) -> Optional[str]:
@@ -1202,6 +1328,11 @@ class VrfParentConfigModel(NDBaseModel):
     @classmethod
     def _validate_mcast_group(cls, v: Optional[str]) -> Optional[str]:
         return VrfValidators.validate_overlay_mcast_group(v)
+
+    @field_validator("bgp_passwd_encrypt", mode="before")
+    @classmethod
+    def _validate_bgp_encrypt(cls, v: Optional[int]) -> Optional[int]:
+        return VrfValidators.validate_bgp_passwd_encrypt(v)
 
     @field_validator(
         "import_vpn_rt",
@@ -1221,6 +1352,23 @@ class VrfParentConfigModel(NDBaseModel):
     # ------------------------------------------------------------------
     # Cross-field validators
     # ------------------------------------------------------------------
+
+    @model_validator(mode="after")
+    def _check_l3vni_wo_vlan(self) -> Self:
+        """When l3vni_wo_vlan=True, VLAN/SVI fields must not be set."""
+        if self.l3vni_wo_vlan:
+            vlan_fields = {
+                "vlan_id": self.vlan_id,
+                "vrf_vlan_name": self.vrf_vlan_name,
+                "vrf_intf_desc": self.vrf_intf_desc,
+            }
+            set_fields = [k for k, v in vlan_fields.items() if v is not None]
+            if set_fields:
+                raise ValueError(
+                    f"The following fields must not be set when "
+                    f"l3vni_wo_vlan=True: {', '.join(set_fields)}"
+                )
+        return self
 
     @model_validator(mode="after")
     def _check_trm_fields(self) -> Self:
@@ -1243,6 +1391,22 @@ class VrfParentConfigModel(NDBaseModel):
                     f"The following fields require trm_enable=True: "
                     f"{', '.join(set_fields)}"
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _check_netflow_monitor(self) -> Self:
+        """Require nf_monitor when netflow_enable=True."""
+        if self.netflow_enable and not self.nf_monitor:
+            raise ValueError("nf_monitor is required when netflow_enable=True")
+        return self
+
+    @model_validator(mode="after")
+    def _check_bgp_password(self) -> Self:
+        """Require bgp_passwd_encrypt when bgp_password is set."""
+        if self.bgp_password is not None and self.bgp_passwd_encrypt is None:
+            raise ValueError(
+                "bgp_passwd_encrypt (3 or 7) is required when bgp_password is set"
+            )
         return self
 
     @model_validator(mode="after")

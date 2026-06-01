@@ -27,6 +27,11 @@ from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.vrf_da
 from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.vrfs import (
     NDVrfOrchestrator,
 )
+from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.vrf_argument_specs import (
+    _child_fabric_config_element_spec,
+    vrf_base_argument_spec,
+    vrf_parent_argument_spec,
+)
 
 
 class _Strategy:
@@ -189,6 +194,46 @@ def test_vrfs_00025_config_model_accepts_supported_attachment_fields():
         assert attachment["export_vpn_rt"] == ["65000:11"]
         assert attachment["import_evpn_rt"] == ["65000:12"]
         assert attachment["export_evpn_rt"] == ["65000:13"]
+
+
+def test_vrfs_00026_config_models_match_argument_specs():
+    """
+    # Summary
+
+    Verify playbook-facing config models accept the same field names exposed
+    by their corresponding argument specs.
+    """
+    assert set(VrfConfigModel.model_fields) == set(vrf_base_argument_spec())
+    assert set(VrfParentConfigModel.model_fields) == set(vrf_parent_argument_spec())
+
+    from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.config_models import (
+        VrfChildConfigModel,
+    )
+
+    assert set(VrfChildConfigModel.model_fields) == set(
+        _child_fabric_config_element_spec()
+    )
+
+
+def test_vrfs_00027_config_model_accepts_schema_security_fields():
+    """
+    # Summary
+
+    Verify schema-supported security group fields are accepted and preserved
+    by standalone and parent config models.
+    """
+    config = {
+        "vrf_name": "ansible-vrf-security",
+        "default_security_action": "enforcedPermit",
+        "default_security_group_tag": 101,
+    }
+
+    standalone = VrfConfigModel.from_config(config).to_config()
+    parent = VrfParentConfigModel.from_config(config).to_config()
+
+    for parsed in (standalone, parent):
+        assert parsed["default_security_action"] == "enforcedPermit"
+        assert parsed["default_security_group_tag"] == 101
 
 
 def test_vrfs_00030_transform_all_standalone_manageable_fields():

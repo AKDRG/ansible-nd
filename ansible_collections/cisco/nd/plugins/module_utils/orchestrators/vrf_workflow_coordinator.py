@@ -93,6 +93,7 @@ class VrfWorkflowCoordinator:
         """
         module_args: Dict = dict(self.module.params)
         fabric_type: str = self.strategy.fabric_type
+        self._validate_topology_argument_scope(module_args, fabric_type)
 
         if self.strategy.is_child:
             return self._handle_child_workflow(module_args, fabric_type)
@@ -100,6 +101,44 @@ class VrfWorkflowCoordinator:
             return self._handle_parent_workflow(module_args, fabric_type)
         else:
             return self._handle_standalone_workflow(module_args, fabric_type)
+
+    def _validate_topology_argument_scope(
+        self,
+        module_args: Dict,
+        fabric_type: str,
+    ) -> None:
+        """
+        Reject topology-scoped task keys before VRF workflow execution.
+
+        Ansible's argument spec is static, but parent/child/standalone scope is
+        known only after fabric resolution.  This method provides the second
+        layer of argument enforcement before any VRF payload is sent to ND.
+        """
+        config = module_args.get("config") or []
+
+        if not self.strategy.is_parent:
+            for idx, vrf in enumerate(config):
+                if "child_fabric_config" in vrf:
+                    self.module.fail_json(
+                        msg=(
+                            "config[{idx}].child_fabric_config is only valid "
+                            "when the target fabric is a multisite or "
+                            "multicluster parent. Target fabric "
+                            f"'{module_args.get('fabric')}' resolved as "
+                            f"'{fabric_type}'."
+                        ).format(idx=idx)
+                    )
+
+        if self.strategy.is_child:
+            for idx, vrf in enumerate(config):
+                if "attach" in vrf:
+                    self.module.fail_json(
+                        msg=(
+                            "config[{idx}].attach is not valid when targeting "
+                            "a child fabric directly. Run attachment and "
+                            "deployment operations against the parent fabric."
+                        ).format(idx=idx)
+                    )
 
     # ── Config parsing ────────────────────────────────────────────
 
@@ -396,6 +435,7 @@ class VrfWorkflowCoordinator:
         """
         active_strategy = strategy or self.strategy
         state = module_args.get("state", "merged")
+        config = module_args.get("config") or []
 
         if active_strategy.is_child or state == "query":
             return self._run_state_machine(module_args, strategy=active_strategy)
@@ -406,13 +446,37 @@ class VrfWorkflowCoordinator:
                 active_strategy,
             )
 
+        pre_delete_traces: List[Dict[str, Any]] = []
+        if state == "overridden":
+            pre_delete_traces = self._prepare_overridden_deletions(
+                module_args,
+                active_strategy,
+            )
+
+        desired_attachments = None
+        desired_vrf_names = None
+        if state in ("replaced", "overridden"):
+            desired_attachments = self._desired_attachment_map(
+                module_args,
+                active_strategy,
+            )
+        if state == "overridden":
+            desired_vrf_names = self._configured_vrf_names(config)
+
         pre_attach = self._apply_attachment_phase(
             module_args,
             active_strategy,
             phase="pre",
+            desired=desired_attachments,
+            current_vrf_names=desired_vrf_names,
         )
         result = self._run_state_machine(module_args, strategy=active_strategy)
-        self._merge_api_trace(result, pre_attach)
+
+        pre_traces = list(pre_delete_traces)
+        if pre_attach:
+            pre_traces.append(pre_attach)
+        for trace in reversed(pre_traces):
+            self._merge_api_trace(result, trace, prepend=True)
 
         if result.get("failed", False):
             return result
@@ -421,18 +485,20 @@ class VrfWorkflowCoordinator:
             module_args,
             active_strategy,
             phase="post",
+            desired=desired_attachments,
+            current_vrf_names=desired_vrf_names,
         )
         self._merge_api_trace(result, post_attach)
 
         deploy_payloads = self._build_deploy_payloads(
-            module_args.get("config") or [],
+            config,
             pre_attach.get("deploy_targets", {}),
             post_attach.get("deploy_targets", {}),
         )
         if not deploy_payloads:
             deploy_payloads = self._build_pending_vrf_deploy_payloads(
                 result,
-                module_args.get("config") or [],
+                config,
                 module_args,
                 active_strategy,
             )
@@ -493,6 +559,51 @@ class VrfWorkflowCoordinator:
         for trace in reversed(traces):
             self._merge_api_trace(result, trace, prepend=True)
         return result
+
+    def _prepare_overridden_deletions(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+    ) -> List[Dict[str, Any]]:
+        """
+        Detach/deploy omitted VRFs before overridden deletes them.
+
+        ``overridden`` removes VRFs that exist on ND but are not present in the
+        playbook.  Those omitted VRFs may still be attached, so they need the
+        same pre-delete detach/deploy/wait sequence used by ``state=deleted``.
+        """
+        omitted_vrf_names = self._overridden_vrf_names_to_delete(module_args, strategy)
+        if not omitted_vrf_names:
+            return []
+
+        traces: List[Dict[str, Any]] = []
+        detach_trace = self._apply_deleted_attachment_phase(
+            module_args,
+            strategy,
+            omitted_vrf_names,
+        )
+        if detach_trace:
+            traces.append(detach_trace)
+
+        deploy_payloads = self._build_deploy_payloads(
+            module_args.get("config") or [],
+            detach_trace.get("deploy_targets", {}) if detach_trace else {},
+        )
+        for deploy_payload in deploy_payloads:
+            deploy_trace = self._deploy_vrf_attachments(
+                module_args,
+                strategy,
+                deploy_payload,
+            )
+            traces.append(deploy_trace)
+
+        if deploy_payloads:
+            self._wait_for_vrfs_delete_ready(
+                module_args,
+                strategy,
+                omitted_vrf_names,
+            )
+        return traces
 
     # ── Attachment / deployment helpers ──────────────────────────
 
@@ -599,6 +710,8 @@ class VrfWorkflowCoordinator:
         module_args: Dict,
         strategy: BaseVrfStrategy,
         phase: str,
+        desired: Optional[Dict[Tuple[str, str], Dict[str, Any]]] = None,
+        current_vrf_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Attach or detach VRFs according to state and phase."""
         state = module_args.get("state", "merged")
@@ -609,15 +722,24 @@ class VrfWorkflowCoordinator:
         if phase == "post" and state not in ("merged", "replaced", "overridden"):
             return {}
 
-        desired = self._desired_attachment_map(module_args, strategy)
+        if current_vrf_names == []:
+            return {}
+
+        desired = desired if desired is not None else self._desired_attachment_map(
+            module_args,
+            strategy,
+        )
         vrf_names = self._configured_vrf_names(config)
         deploy_enabled = self._deploy_enabled_by_vrf(config)
 
         query_all = state == "overridden"
+        query_vrf_names = current_vrf_names
+        if query_vrf_names is None:
+            query_vrf_names = None if query_all else vrf_names
         current = self._current_attachment_map(
             module_args,
             strategy,
-            None if query_all else vrf_names,
+            query_vrf_names,
         )
 
         payloads: List[Dict[str, Any]] = []
@@ -652,6 +774,7 @@ class VrfWorkflowCoordinator:
         self,
         module_args: Dict,
         strategy: BaseVrfStrategy,
+        vrf_names: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """
         Detach all current attachments for deleted VRFs, independent of config.
@@ -660,8 +783,12 @@ class VrfWorkflowCoordinator:
         attach map because a delete task should converge what is currently on
         ND, not what the playbook happens to include under ``attach``.
         """
-        vrf_names = self._configured_vrf_names(module_args.get("config") or [])
-        attachments = self._current_attachment_details(
+        vrf_names = (
+            vrf_names
+            if vrf_names is not None
+            else self._configured_vrf_names(module_args.get("config") or [])
+        )
+        attachments = self._current_attachment_details_ignore_missing(
             module_args,
             strategy,
             vrf_names or None,
@@ -677,9 +804,12 @@ class VrfWorkflowCoordinator:
             if not vrf_name or not switch_id:
                 continue
 
-            self._record_deploy_target(deploy_targets, vrf_name, switch_id)
-
             key = (vrf_name, switch_id)
+            if attachment.get("attach") is True:
+                self._record_deploy_target(deploy_targets, vrf_name, switch_id)
+            elif self._attachment_has_pending_delete_work(attachment):
+                self._record_deploy_target(deploy_targets, vrf_name, switch_id)
+
             if attachment.get("attach") is True and key not in seen_payloads:
                 payloads.append(
                     {
@@ -700,6 +830,45 @@ class VrfWorkflowCoordinator:
             deploy_targets,
             OperationType.DELETE,
         )
+
+    def _attachment_has_pending_delete_work(self, attachment: Dict[str, Any]) -> bool:
+        """Return True for an already-detached row that still needs deploy."""
+        pending_statuses = {
+            "deploymentInProgress",
+            "failed",
+            "inProgress",
+            "outOfSync",
+            "pending",
+            "previewInProgress",
+        }
+        for key in (
+            "status",
+            "configStatus",
+            "deploymentStatus",
+            "vrfStatus",
+            "attachmentStatus",
+        ):
+            status = attachment.get(key)
+            if status is not None and str(status).strip() in pending_statuses:
+                return True
+        return False
+
+    def _overridden_vrf_names_to_delete(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+    ) -> List[str]:
+        """Return current VRFs that are omitted from an overridden config."""
+        desired_names = set(self._configured_vrf_names(module_args.get("config") or []))
+        omitted_names: List[str] = []
+        seen: Set[str] = set()
+
+        for vrf in self._query_current_vrfs(module_args, strategy):
+            name = vrf.get("vrf_name") or vrf.get("vrfName")
+            if name and name not in desired_names and name not in seen:
+                omitted_names.append(name)
+                seen.add(name)
+        return omitted_names
 
     def _configured_vrf_names(self, config: List[Dict]) -> List[str]:
         """Return configured VRF names in stable order."""
@@ -911,6 +1080,43 @@ class VrfWorkflowCoordinator:
             return data
         return []
 
+    def _current_attachment_details_ignore_missing(
+        self,
+        module_args: Dict,
+        strategy: BaseVrfStrategy,
+        vrf_names: Optional[List[str]],
+    ) -> List[Dict[str, Any]]:
+        """Query attachment details while treating absent deleted VRFs as empty."""
+        try:
+            return self._current_attachment_details(module_args, strategy, vrf_names)
+        except Exception as exc:
+            if not self._is_vrf_not_found_error(exc):
+                raise
+
+        if not vrf_names or len(vrf_names) <= 1:
+            return []
+
+        attachments: List[Dict[str, Any]] = []
+        for vrf_name in vrf_names:
+            try:
+                attachments.extend(
+                    self._current_attachment_details(
+                        module_args,
+                        strategy,
+                        [vrf_name],
+                    )
+                )
+            except Exception as exc:
+                if not self._is_vrf_not_found_error(exc):
+                    raise
+        return attachments
+
+    @staticmethod
+    def _is_vrf_not_found_error(error: Exception) -> bool:
+        """Return True for ND's attachment-query error when a VRF is absent."""
+        message = str(error)
+        return "VRF(s)" in message and "not found in fabric" in message
+
     def _planned_detach_payloads(
         self,
         state: str,
@@ -1017,6 +1223,7 @@ class VrfWorkflowCoordinator:
         deploy_type = self._deploy_type_by_vrf(config)
         payloads: List[Dict[str, Any]] = []
         vrf_level_names: List[str] = []
+        switch_groups: Dict[Tuple[str, ...], List[str]] = {}
 
         for vrf_name in sorted(deploy_targets.keys()):
             if deploy_type.get(vrf_name, "switch") == "vrf":
@@ -1024,14 +1231,17 @@ class VrfWorkflowCoordinator:
                 continue
             switch_ids = sorted(deploy_targets.get(vrf_name) or [])
             if switch_ids:
-                payloads.append(
-                    VrfDeployRequestModel(
-                        vrf_names=[vrf_name],
-                        switch_ids=switch_ids,
-                    ).to_payload()
-                )
+                switch_groups.setdefault(tuple(switch_ids), []).append(vrf_name)
             else:
                 vrf_level_names.append(vrf_name)
+
+        for switch_ids, vrf_names in sorted(switch_groups.items()):
+            payloads.append(
+                VrfDeployRequestModel(
+                    vrf_names=sorted(vrf_names),
+                    switch_ids=list(switch_ids),
+                ).to_payload()
+            )
 
         if vrf_level_names:
             payloads.append(
@@ -1075,7 +1285,7 @@ class VrfWorkflowCoordinator:
         }
         vrf_level_names.update(pending_vrfs.difference(switch_level_names))
 
-        payloads: List[Dict[str, Any]] = []
+        deploy_target_map: Dict[str, Set[str]] = {}
         if switch_level_names:
             attachment_details = self._current_attachment_details(
                 module_args,
@@ -1094,20 +1304,14 @@ class VrfWorkflowCoordinator:
             for vrf_name in sorted(switch_level_names):
                 switch_ids = sorted(switch_ids_by_vrf.get(vrf_name) or [])
                 if switch_ids:
-                    payloads.append(
-                        VrfDeployRequestModel(
-                            vrf_names=[vrf_name],
-                            switch_ids=switch_ids,
-                        ).to_payload()
-                    )
+                    deploy_target_map[vrf_name] = set(switch_ids)
                 else:
                     vrf_level_names.add(vrf_name)
 
-        if vrf_level_names:
-            payloads.append(
-                VrfDeployRequestModel(vrf_names=sorted(vrf_level_names)).to_payload()
-            )
-        return payloads
+        for vrf_name in vrf_level_names:
+            deploy_target_map.setdefault(vrf_name, set())
+
+        return self._build_deploy_payloads(config, deploy_target_map)
 
     def _query_current_vrfs(
         self,
@@ -1128,10 +1332,15 @@ class VrfWorkflowCoordinator:
         self,
         module_args: Dict,
         strategy: BaseVrfStrategy,
+        vrf_names: Optional[List[str]] = None,
     ) -> None:
         """Wait until configured VRFs are absent or in notApplicable state."""
-        vrf_names = set(self._configured_vrf_names(module_args.get("config") or []))
-        if not vrf_names:
+        vrf_name_set = set(
+            vrf_names
+            if vrf_names is not None
+            else self._configured_vrf_names(module_args.get("config") or [])
+        )
+        if not vrf_name_set:
             return
 
         timeout = int(module_args.get("timeout") or self.module.params.get("timeout") or 30)
@@ -1144,13 +1353,13 @@ class VrfWorkflowCoordinator:
             last_statuses = {}
             for vrf in vrfs:
                 name = vrf.get("vrf_name") or vrf.get("vrfName")
-                if name in vrf_names:
+                if name in vrf_name_set:
                     status = vrf.get("vrf_status") or vrf.get("vrfStatus") or ""
                     last_statuses[name] = str(status)
 
             if all(
                 name not in last_statuses or last_statuses[name] in ready_statuses
-                for name in vrf_names
+                for name in vrf_name_set
             ):
                 return
 

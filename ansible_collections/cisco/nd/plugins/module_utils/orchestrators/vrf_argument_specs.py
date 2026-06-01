@@ -77,6 +77,12 @@ def vrf_base_argument_spec():
         vrf_extension_template_name=dict(type="str"),
         service_vrf_template_name=dict(type="str"),
         vrf_template_config=dict(type="dict"),
+        # Security group
+        default_security_action=dict(
+            type="str",
+            choices=["unenforcedOrNone", "enforcedPermit", "enforcedDeny"],
+        ),
+        default_security_group_tag=dict(type="int"),
         # VLAN / SVI
         vlan_id=dict(type="int"),
         vrf_vlan_name=dict(type="str"),
@@ -149,7 +155,6 @@ def vrf_parent_argument_spec():
     spec["child_fabric_config"] = dict(
         type="list",
         elements="dict",
-        default=[],
         options=_child_fabric_config_element_spec(),
     )
     return spec

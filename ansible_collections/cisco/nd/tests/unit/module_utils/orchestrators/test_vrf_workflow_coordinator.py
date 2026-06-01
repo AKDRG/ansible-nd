@@ -16,7 +16,11 @@ from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.vrf_workflo
     VrfWorkflowCoordinator,
 )
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.config_models import (
+    VrfConfigModel,
     VrfParentConfigModel,
+)
+from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.vrf_argument_specs import (
+    vrf_parent_argument_spec,
 )
 from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.vrf_fabric_resolver import (
     VrfFabricResolver,
@@ -36,6 +40,15 @@ class _Module:
 class _ParentStrategy:
     config_model_cls = VrfParentConfigModel
     fabric_data = {"members": [{"fabricName": "AK-VXLAN"}]}
+    fabric_name = "msd_p"
+
+    @property
+    def is_child(self):
+        return False
+
+    @property
+    def is_parent(self):
+        return True
 
     def child_fabric_members(self):
         return ["AK-VXLAN"]
@@ -48,8 +61,109 @@ class _ParentStrategy:
         }
 
 
+class _StandaloneStrategy:
+    config_model_cls = VrfConfigModel
+    fabric_type = "standalone"
+    fabric_name = "AK-VXLAN"
+
+    @property
+    def is_child(self):
+        return False
+
+    @property
+    def is_parent(self):
+        return False
+
+
 class _ChildStrategy:
+    config_model_cls = VrfConfigModel
     fabric_type = "multisite_child"
+    fabric_name = "AK-VXLAN"
+
+    @property
+    def is_child(self):
+        return True
+
+    @property
+    def is_parent(self):
+        return False
+
+
+def test_vrf_workflow_coordinator_00001_arg_spec_blocks_invalid_child_suboptions():
+    """
+    # Summary
+
+    Verify the wired parent config spec keeps child_fabric_config constrained
+    to child-supported fields.
+    """
+    spec = vrf_parent_argument_spec()
+    child_spec = spec["child_fabric_config"]["options"]
+
+    assert "vlan_id" not in child_spec
+    assert "attach" not in child_spec
+    assert "deploy" not in child_spec
+    assert "child_fabric_config" not in child_spec
+    assert "default" not in spec["child_fabric_config"]
+
+
+def test_vrf_workflow_coordinator_00002_standalone_rejects_child_fabric_config():
+    """
+    # Summary
+
+    Verify parent-only child_fabric_config is blocked after fabric resolution
+    when the target fabric is standalone.
+    """
+    module_args = {
+        "fabric": "AK-VXLAN",
+        "state": "merged",
+        "config": [
+            {
+                "vrf_name": "ansible-vrf",
+                "child_fabric_config": [{"fabric": "child"}],
+            }
+        ],
+    }
+    coordinator = VrfWorkflowCoordinator(
+        module=_Module(dict(module_args)),
+        strategy=_StandaloneStrategy(),
+    )
+
+    try:
+        coordinator._validate_topology_argument_scope(module_args, "standalone")
+    except AssertionError as exc:
+        assert "child_fabric_config is only valid" in exc.args[0]["msg"]
+    else:
+        raise AssertionError("standalone child_fabric_config was not rejected")
+
+
+def test_vrf_workflow_coordinator_00003_child_rejects_direct_attach():
+    """
+    # Summary
+
+    Verify direct child-fabric tasks reject parent-level attachment input
+    before workflow execution.
+    """
+    module_args = {
+        "fabric": "AK-VXLAN",
+        "state": "query",
+        "config": [
+            {
+                "vrf_name": "ansible-vrf",
+                "attach": [{"ip_address": "192.0.2.10"}],
+            }
+        ],
+    }
+    coordinator = VrfWorkflowCoordinator(
+        module=_Module(dict(module_args)),
+        strategy=_ChildStrategy(),
+    )
+
+    try:
+        coordinator._validate_topology_argument_scope(module_args, "multisite_child")
+    except AssertionError as exc:
+        assert "attach is not valid" in exc.args[0]["msg"]
+    else:
+        raise AssertionError("child attach was not rejected")
 
 
 def test_vrf_workflow_coordinator_00010_parent_child_results_keep_state_machine_shape():
@@ -292,6 +406,44 @@ def test_vrf_workflow_coordinator_00040_build_vrf_level_deploy_payload():
     ]
 
 
+def test_vrf_workflow_coordinator_00045_build_switch_level_deploy_payload_batches_by_switch_set():
+    """
+    # Summary
+
+    Verify switch-level deploy payloads batch VRFs that share the same switch
+    set instead of emitting one deploy request per VRF.
+    """
+    coordinator = VrfWorkflowCoordinator.__new__(VrfWorkflowCoordinator)
+    payloads = coordinator._build_deploy_payloads(
+        [
+            {"vrf_name": "ansible-vrf-a", "deploy_type": "switch"},
+            {"vrf_name": "ansible-vrf-b", "deploy_type": "switch"},
+            {"vrf_name": "ansible-vrf-c", "deploy_type": "switch"},
+            {"vrf_name": "ansible-vrf-d", "deploy_type": "vrf"},
+        ],
+        {
+            "ansible-vrf-a": {"SERIAL1", "SERIAL2"},
+            "ansible-vrf-b": {"SERIAL2", "SERIAL1"},
+            "ansible-vrf-c": {"SERIAL3"},
+            "ansible-vrf-d": {"SERIAL4"},
+        },
+    )
+
+    assert payloads == [
+        {
+            "switchIds": ["SERIAL1", "SERIAL2"],
+            "vrfNames": ["ansible-vrf-a", "ansible-vrf-b"],
+        },
+        {
+            "switchIds": ["SERIAL3"],
+            "vrfNames": ["ansible-vrf-c"],
+        },
+        {
+            "vrfNames": ["ansible-vrf-d"],
+        },
+    ]
+
+
 def test_vrf_workflow_coordinator_00050_deleted_ignores_child_fabric_config(monkeypatch):
     """
     # Summary
@@ -342,3 +494,242 @@ def test_vrf_workflow_coordinator_00050_deleted_ignores_child_fabric_config(monk
     assert calls == ["parent"]
     assert result["changed"] is True
     assert result["workflow"] == "Multisite Parent without Child Fabric Processing"
+
+
+def test_vrf_workflow_coordinator_00060_deleted_detach_ignores_attach_and_deploy(monkeypatch):
+    """
+    # Summary
+
+    Verify state=deleted detaches current ND attachments and records deploy
+    targets without honoring the playbook attach block or deploy=false.
+    """
+    coordinator = VrfWorkflowCoordinator.__new__(VrfWorkflowCoordinator)
+    module_args = {
+        "state": "deleted",
+        "config": [
+            {
+                "vrf_name": "ansible-msd-vrf",
+                "deploy": False,
+                "attach": [{"ip_address": "192.0.2.10"}],
+            }
+        ],
+    }
+    posted = {}
+
+    monkeypatch.setattr(
+        coordinator,
+        "_current_attachment_details",
+        lambda *_args, **_kwargs: [
+            {
+                "vrfName": "ansible-msd-vrf",
+                "switchId": "SERIAL1",
+                "attach": True,
+            },
+            {
+                "vrfName": "ansible-msd-vrf",
+                "switchId": "SERIAL2",
+                "attach": False,
+            },
+            {
+                "vrfName": "ansible-msd-vrf",
+                "switchId": "SERIAL3",
+                "attach": False,
+                "deploymentStatus": "pending",
+            },
+        ],
+    )
+
+    def post_attachments(_args, _strategy, payloads, deploy_targets, operation_type):
+        posted["payloads"] = payloads
+        posted["deploy_targets"] = deploy_targets
+        posted["operation_type"] = operation_type
+        return {"changed": True, "deploy_targets": deploy_targets}
+
+    monkeypatch.setattr(coordinator, "_post_vrf_attachments", post_attachments)
+
+    trace = coordinator._apply_deleted_attachment_phase(module_args, _ParentStrategy())
+
+    assert posted["payloads"] == [
+        {
+            "vrfName": "ansible-msd-vrf",
+            "switchId": "SERIAL1",
+            "attach": False,
+        }
+    ]
+    assert posted["deploy_targets"] == {
+        "ansible-msd-vrf": {"SERIAL1", "SERIAL3"}
+    }
+    assert trace["deploy_targets"] == {"ansible-msd-vrf": {"SERIAL1", "SERIAL3"}}
+
+
+def test_vrf_workflow_coordinator_00065_deleted_ignores_absent_vrf_attachment_query(monkeypatch):
+    """
+    # Summary
+
+    Verify state=deleted treats ND's absent-VRF attachment query response as
+    no attachments to detach instead of failing before idempotency handling.
+    """
+    coordinator = VrfWorkflowCoordinator.__new__(VrfWorkflowCoordinator)
+    module_args = {
+        "state": "deleted",
+        "config": [{"vrf_name": "already-absent-vrf"}],
+    }
+
+    def missing_vrf(*_args, **_kwargs):
+        raise Exception(
+            "Request failed (400): Bad Request: {'message': 'VRF(s) "
+            "already-absent-vrf not found in fabric msd_p'}"
+        )
+
+    monkeypatch.setattr(coordinator, "_current_attachment_details", missing_vrf)
+
+    trace = coordinator._apply_deleted_attachment_phase(module_args, _ParentStrategy())
+
+    assert trace == {"deploy_targets": {}}
+
+
+def test_vrf_workflow_coordinator_00070_deleted_deploys_before_delete(monkeypatch):
+    """
+    # Summary
+
+    Verify state=deleted runs detach, deploy, wait, then delete, and honors
+    deploy_type=vrf while ignoring deploy=false.
+    """
+    module_args = {
+        "fabric": "msd_p",
+        "state": "deleted",
+        "output_level": "debug",
+        "config": [
+            {
+                "vrf_name": "ansible-msd-vrf",
+                "deploy": False,
+                "deploy_type": "vrf",
+            }
+        ],
+    }
+    coordinator = VrfWorkflowCoordinator(
+        module=_Module(dict(module_args)),
+        strategy=_ParentStrategy(),
+    )
+    call_order = []
+
+    def detach(_args, _strategy):
+        call_order.append("detach")
+        return {"deploy_targets": {"ansible-msd-vrf": {"SERIAL1"}}}
+
+    def deploy(_args, _strategy, payload):
+        call_order.append("deploy")
+        assert payload == {"vrfNames": ["ansible-msd-vrf"]}
+        return {}
+
+    def wait(_args, _strategy):
+        call_order.append("wait")
+
+    def delete(_args, strategy=None):
+        call_order.append("delete")
+        assert strategy is not None
+        return {
+            "changed": True,
+            "output_level": "debug",
+            "before": [],
+            "after": [],
+            "diff": [],
+        }
+
+    monkeypatch.setattr(coordinator, "_apply_deleted_attachment_phase", detach)
+    monkeypatch.setattr(coordinator, "_deploy_vrf_attachments", deploy)
+    monkeypatch.setattr(coordinator, "_wait_for_vrfs_delete_ready", wait)
+    monkeypatch.setattr(coordinator, "_run_state_machine", delete)
+
+    result = coordinator._run_state_machine_with_attachments(
+        dict(module_args),
+        defer_deploy=True,
+    )
+
+    assert call_order == ["detach", "deploy", "wait", "delete"]
+    assert result["changed"] is True
+    assert "_deferred_deploy_payloads" not in result
+
+
+def test_vrf_workflow_coordinator_00080_overridden_deploys_omitted_detach_before_delete(monkeypatch):
+    """
+    # Summary
+
+    Verify overridden detaches and deploys omitted VRFs before the state
+    machine deletes them, while leaving retained VRFs to the normal flow.
+    """
+    module_args = {
+        "fabric": "msd_p",
+        "state": "overridden",
+        "output_level": "debug",
+        "config": [
+            {
+                "vrf_name": "ansible-keep-vrf",
+                "attach": [{"ip_address": "192.0.2.10"}],
+            }
+        ],
+    }
+    coordinator = VrfWorkflowCoordinator(
+        module=_Module(dict(module_args)),
+        strategy=_ParentStrategy(),
+    )
+    call_order = []
+
+    def query_current(_args, _strategy):
+        return [
+            {"vrfName": "ansible-keep-vrf"},
+            {"vrfName": "ansible-delete-vrf"},
+        ]
+
+    def detach(_args, _strategy, vrf_names=None):
+        call_order.append("detach")
+        assert vrf_names == ["ansible-delete-vrf"]
+        return {"deploy_targets": {"ansible-delete-vrf": {"SERIAL1"}}}
+
+    def deploy(_args, _strategy, payload):
+        call_order.append("deploy")
+        assert payload == {
+            "switchIds": ["SERIAL1"],
+            "vrfNames": ["ansible-delete-vrf"],
+        }
+        return {}
+
+    def wait(_args, _strategy, vrf_names=None):
+        call_order.append("wait")
+        assert vrf_names == ["ansible-delete-vrf"]
+
+    def attachment_phase(_args, _strategy, phase, **kwargs):
+        call_order.append(f"{phase}_attach")
+        assert kwargs["current_vrf_names"] == ["ansible-keep-vrf"]
+        return {}
+
+    def run_state_machine(_args, strategy=None):
+        call_order.append("state_machine")
+        assert strategy is not None
+        return {
+            "changed": True,
+            "output_level": "debug",
+            "before": [],
+            "after": [],
+            "diff": [],
+        }
+
+    monkeypatch.setattr(coordinator, "_query_current_vrfs", query_current)
+    monkeypatch.setattr(coordinator, "_apply_deleted_attachment_phase", detach)
+    monkeypatch.setattr(coordinator, "_deploy_vrf_attachments", deploy)
+    monkeypatch.setattr(coordinator, "_wait_for_vrfs_delete_ready", wait)
+    monkeypatch.setattr(coordinator, "_apply_attachment_phase", attachment_phase)
+    monkeypatch.setattr(coordinator, "_desired_attachment_map", lambda *_args: {})
+    monkeypatch.setattr(coordinator, "_run_state_machine", run_state_machine)
+
+    result = coordinator._run_state_machine_with_attachments(dict(module_args))
+
+    assert call_order == [
+        "detach",
+        "deploy",
+        "wait",
+        "pre_attach",
+        "state_machine",
+        "post_attach",
+    ]
+    assert result["changed"] is True
