@@ -1,0 +1,68 @@
+---
+# Ad hoc MSD VRF overridden replace test playbook.
+#
+# This intentionally converges the parent fabric VRF set to only the new VRF
+# below. Existing parent VRFs are expected to be removed by state=overridden.
+#
+# Run from this directory with:
+#
+#   ansible-playbook -i dcnm_hosts.yaml msd_vrf_overridden_replace_tests.yaml -vvvvv
+#
+- name: MSD VRF Overridden Replace Test
+  hosts: ndfc
+  gather_facts: false
+  connection: ansible.netcommon.httpapi
+
+  vars:
+    msd_parent_fabric: msd_p
+    attach_switch_ip: 10.122.84.57
+    new_vrf_name: ansible-msd-vrf-ovr-new-aH
+
+    new_vrf_config:
+      - vrf_name: "{{ new_vrf_name }}"
+        vrf_id: 9008023
+        vrf_description: Ansible MSD VRF overridden new VRF test
+        loopback_route_tag: 12345
+        redist_direct_rmap: FABRIC-RMAP-REDIST-SUBNET
+        v6_redist_direct_rmap: FABRIC-RMAP-REDIST-SUBNET
+        max_bgp_paths: 4
+        max_ibgp_paths: 4
+        ipv6_linklocal_enable: true
+        disable_rt_auto: false
+        import_vpn_rt:
+          - "65000:9008023"
+        export_vpn_rt:
+          - "65000:9008023"
+        import_evpn_rt:
+          - "65000:9008023"
+        export_evpn_rt:
+          - "65000:9008023"
+        deploy: true
+        deploy_type: switch
+        attach:
+          - ip_address: "{{ attach_switch_ip }}"
+
+  tasks:
+    - name: Replace parent VRFs with new VRF through overridden state
+      cisco.nd.nd_vrf:
+        fabric: "{{ msd_parent_fabric }}"
+        output_level: debug
+        timeout: 30
+        state: overridden
+        config: "{{ new_vrf_config }}"
+      register: overridden_replace
+
+    - name: Validate overridden replacement
+      ansible.builtin.assert:
+        that:
+          - overridden_replace is changed
+          - overridden_replace.failed is not defined or not overridden_replace.failed
+          - overridden_replace.after | selectattr('vrf_name', 'equalto', new_vrf_name) | list | length == 1
+          - "'/api/v1/manage/fabrics/' ~ msd_parent_fabric ~ '/vrfs' in overridden_replace.api_paths"
+          - "'/api/v1/manage/fabrics/' ~ msd_parent_fabric ~ '/vrfAttachments' in overridden_replace.api_paths"
+          - "'/api/v1/manage/fabrics/' ~ msd_parent_fabric ~ '/vrfActions/deploy' in overridden_replace.api_paths"
+          - "'/api/v1/manage/fabrics/' ~ msd_parent_fabric ~ '/vrfActions/remove' in overridden_replace.api_paths"
+
+    - name: Show overridden replace result
+      ansible.builtin.debug:
+        var: overridden_replace

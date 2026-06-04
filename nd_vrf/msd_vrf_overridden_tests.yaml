@@ -1,0 +1,127 @@
+---
+# Guarded ad hoc MSD VRF overridden test playbook.
+#
+# Run from this directory with:
+#
+#   ansible-playbook -i dcnm_hosts.yaml msd_vrf_overridden_tests.yaml -vvvvv
+#
+- name: MSD VRF Overridden Tests
+  hosts: ndfc
+  gather_facts: false
+  connection: ansible.netcommon.httpapi
+
+  vars:
+    msd_parent_fabric: msd_p
+    attach_switch_ip: 10.122.84.57
+    keep_vrf_name: ansible-msd-vrf-aH
+    delete_vrf_name: ansible-msd-vrf-ovr-del-aH
+    allowed_parent_vrfs:
+      - "{{ keep_vrf_name }}"
+      - "{{ delete_vrf_name }}"
+
+    keep_vrf_config:
+      - vrf_name: "{{ keep_vrf_name }}"
+        vrf_id: 9008021
+        vrf_description: Ansible MSD VRF overridden keep test
+        loopback_route_tag: 12345
+        redist_direct_rmap: FABRIC-RMAP-REDIST-SUBNET
+        v6_redist_direct_rmap: FABRIC-RMAP-REDIST-SUBNET
+        max_bgp_paths: 4
+        max_ibgp_paths: 4
+        ipv6_linklocal_enable: true
+        disable_rt_auto: false
+        import_vpn_rt:
+          - "65000:9008021"
+        export_vpn_rt:
+          - "65000:9008021"
+        import_evpn_rt:
+          - "65000:9008021"
+        export_evpn_rt:
+          - "65000:9008021"
+        deploy: true
+        deploy_type: switch
+        attach:
+          - ip_address: "{{ attach_switch_ip }}"
+
+    delete_vrf_config:
+      - vrf_name: "{{ delete_vrf_name }}"
+        vrf_id: 9008022
+        vrf_description: Ansible MSD VRF overridden delete test
+        loopback_route_tag: 12345
+        redist_direct_rmap: FABRIC-RMAP-REDIST-SUBNET
+        v6_redist_direct_rmap: FABRIC-RMAP-REDIST-SUBNET
+        max_bgp_paths: 4
+        max_ibgp_paths: 4
+        ipv6_linklocal_enable: true
+        disable_rt_auto: false
+        import_vpn_rt:
+          - "65000:9008022"
+        export_vpn_rt:
+          - "65000:9008022"
+        import_evpn_rt:
+          - "65000:9008022"
+        export_evpn_rt:
+          - "65000:9008022"
+        deploy: true
+        deploy_type: switch
+        attach:
+          - ip_address: "{{ attach_switch_ip }}"
+
+  tasks:
+    - name: Query parent VRFs before overridden test
+      cisco.nd.nd_vrf:
+        fabric: "{{ msd_parent_fabric }}"
+        output_level: debug
+        timeout: 30
+        state: query
+        config: []
+      register: parent_vrf_query
+
+    - name: Guard against overriding unmanaged parent VRFs
+      ansible.builtin.assert:
+        that:
+          - >-
+            (
+              parent_vrf_query.after | default([])
+              | map(attribute='vrf_name')
+              | list
+              | difference(allowed_parent_vrfs)
+              | length
+            ) == 0
+        fail_msg: >-
+          Refusing to run overridden test because parent fabric has VRFs outside
+          the guarded test set {{ allowed_parent_vrfs }}:
+          {{ parent_vrf_query.after | default([]) | map(attribute='vrf_name') | list }}
+
+    - name: Ensure keep and omitted VRFs exist before overridden
+      cisco.nd.nd_vrf:
+        fabric: "{{ msd_parent_fabric }}"
+        output_level: debug
+        timeout: 30
+        state: merged
+        config: "{{ keep_vrf_config + delete_vrf_config }}"
+      register: overridden_setup
+
+    - name: Override parent VRFs with only keep VRF
+      cisco.nd.nd_vrf:
+        fabric: "{{ msd_parent_fabric }}"
+        output_level: debug
+        timeout: 30
+        state: overridden
+        config: "{{ keep_vrf_config }}"
+      register: overridden_result
+
+    - name: Validate overridden removed omitted VRF
+      ansible.builtin.assert:
+        that:
+          - overridden_result is changed
+          - overridden_result.failed is not defined or not overridden_result.failed
+          - overridden_result.after | selectattr('vrf_name', 'equalto', keep_vrf_name) | list | length == 1
+          - overridden_result.after | selectattr('vrf_name', 'equalto', delete_vrf_name) | list | length == 0
+          - "'/api/v1/manage/fabrics/' ~ msd_parent_fabric ~ '/vrfAttachments' in overridden_result.api_paths"
+          - "'/api/v1/manage/fabrics/' ~ msd_parent_fabric ~ '/vrfActions/deploy' in overridden_result.api_paths"
+          - "'/api/v1/manage/fabrics/' ~ msd_parent_fabric ~ '/vrfActions/remove' in overridden_result.api_paths"
+
+    - name: Show overridden result
+      ansible.builtin.debug:
+        var: overridden_result
