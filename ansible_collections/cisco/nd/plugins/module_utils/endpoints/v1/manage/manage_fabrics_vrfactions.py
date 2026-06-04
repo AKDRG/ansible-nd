@@ -18,12 +18,9 @@ Endpoints covered:
 - Stretch VRFs to border gateways
 """
 
-from __future__ import absolute_import, annotations, division, print_function
 
-# pylint: disable=invalid-name
-__metaclass__ = type
 __author__ = "Akshayanat C S"
-# pylint: enable=invalid-name
+
 
 from typing import Literal
 

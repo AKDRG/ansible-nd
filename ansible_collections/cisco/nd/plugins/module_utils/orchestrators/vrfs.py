@@ -1,7 +1,6 @@
 # Copyright: (c) 2026, Akshayanat C S (@achengam) <achengam@cisco.com>
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
-from __future__ import absolute_import, division, print_function
 
 """
 NDVrfOrchestrator — Orchestrator for ND VRF operations.
@@ -34,7 +33,8 @@ Architecture overview
                                   └── per child ──► nd_vrf (recursive)
 """
 
-from typing import Any, ClassVar, Dict, List, Optional, Type
+
+from typing import Any, ClassVar
 
 from ansible_collections.cisco.nd.plugins.module_utils.models.base import NDBaseModel
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.vrf_data_models import (
@@ -73,7 +73,7 @@ class NDVrfOrchestrator(NDBaseOrchestrator["NDVrfModel"]):
 
     # ── Class-level configuration ─────────────────────────────────
 
-    model_class: ClassVar[Type[NDBaseModel]] = NDVrfModel
+    model_class: ClassVar[type[NDBaseModel]] = NDVrfModel
 
     # VRFs are individual resources; bulk-create IS supported by the API
     # (POST /vrfs accepts a {"vrfs": [...]} request body).
@@ -83,19 +83,19 @@ class NDVrfOrchestrator(NDBaseOrchestrator["NDVrfModel"]):
     supports_bulk_update: ClassVar[bool] = False
 
     # Endpoints are None here — always resolved via the strategy at call time.
-    create_endpoint: Optional[Type] = None
-    update_endpoint: Optional[Type] = None
-    delete_endpoint: Optional[Type] = None
-    query_one_endpoint: Optional[Type] = None
-    query_all_endpoint: Optional[Type] = None
+    create_endpoint: type | None = None
+    update_endpoint: type | None = None
+    delete_endpoint: type | None = None
+    query_one_endpoint: type | None = None
+    query_all_endpoint: type | None = None
 
     # Bulk endpoints satisfy the base-class validator; the actual endpoint
     # selection is handled in our overridden create_bulk / delete_bulk methods.
-    create_bulk_endpoint: Optional[Type] = EpManageFabricsVrfsPost
-    delete_bulk_endpoint: Optional[Type] = EpManageFabricsVrfActionsRemovePost
+    create_bulk_endpoint: type | None = EpManageFabricsVrfsPost
+    delete_bulk_endpoint: type | None = EpManageFabricsVrfActionsRemovePost
 
     # Strategy is injected at construction time by nd_vrf.py / VrfFabricResolver.
-    strategy: Optional[BaseVrfStrategy] = None
+    strategy: BaseVrfStrategy | None = None
 
     def model_post_init(self, __context) -> None:
         if self.strategy is None:
@@ -104,7 +104,7 @@ class NDVrfOrchestrator(NDBaseOrchestrator["NDVrfModel"]):
     # ── Config preprocessing ──────────────────────────────────────
 
     @staticmethod
-    def _value(config: Dict[str, Any], *names: str, default: Any = None) -> Any:
+    def _value(config: dict[str, Any], *names: str, default: Any = None) -> Any:
         """Return the first present config value across Python and alias names."""
         for name in names:
             if name in config:
@@ -127,14 +127,14 @@ class NDVrfOrchestrator(NDBaseOrchestrator["NDVrfModel"]):
         )
         management = details.get("management") if isinstance(details, dict) else {}
         if isinstance(management, dict) and management.get("type"):
-                return management["type"]
+            return management["type"]
         return VrfType.VXLAN_IBGP.value
 
     def _transform_child_config_to_payload_model_data(
-        self, config: Dict[str, Any], fabric_name: str
-    ) -> Dict[str, Any]:
+        self, config: dict[str, Any], fabric_name: str
+    ) -> dict[str, Any]:
         """Transform child overrides into a fabricData-only VRF payload."""
-        transformed: Dict[str, Any] = {
+        transformed: dict[str, Any] = {
             "fabric_name": self._value(
                 config, "fabric_name", "fabricName", default=fabric_name
             ),
@@ -206,8 +206,8 @@ class NDVrfOrchestrator(NDBaseOrchestrator["NDVrfModel"]):
         return transformed
 
     def _transform_config_to_payload_model_data(
-        self, config: Dict[str, Any], fabric_name: str
-    ) -> Dict[str, Any]:
+        self, config: dict[str, Any], fabric_name: str
+    ) -> dict[str, Any]:
         """
         Transform playbook-facing VRF config into VrfDataModel-shaped data.
 
@@ -222,7 +222,7 @@ class NDVrfOrchestrator(NDBaseOrchestrator["NDVrfModel"]):
             "vrfType",
             default=self._default_vrf_type(),
         )
-        transformed: Dict[str, Any] = {
+        transformed: dict[str, Any] = {
             "fabric_name": self._value(
                 config, "fabric_name", "fabricName", default=fabric_name
             ),
@@ -471,7 +471,7 @@ class NDVrfOrchestrator(NDBaseOrchestrator["NDVrfModel"]):
         """POST a single VRF."""
         return self.create_bulk([model_instance])
 
-    def create_bulk(self, model_instances: List[NDVrfModel], **kwargs) -> ResponseType:
+    def create_bulk(self, model_instances: list[NDVrfModel], **kwargs) -> ResponseType:
         """POST a list of VRFs in a single request."""
         if not model_instances:
             return {}
@@ -523,7 +523,7 @@ class NDVrfOrchestrator(NDBaseOrchestrator["NDVrfModel"]):
         """Delete a single VRF (delegates to bulk endpoint)."""
         return self.delete_bulk([model_instance])
 
-    def delete_bulk(self, model_instances: List[NDVrfModel], **kwargs) -> ResponseType:
+    def delete_bulk(self, model_instances: list[NDVrfModel], **kwargs) -> ResponseType:
         """POST to vrfActions/remove to delete multiple VRFs in a single call."""
         if not model_instances:
             return {}

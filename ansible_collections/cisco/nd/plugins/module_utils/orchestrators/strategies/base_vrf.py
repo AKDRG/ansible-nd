@@ -1,10 +1,10 @@
 # Copyright: (c) 2026, Akshayanat C S (@achengam) <achengam@cisco.com>
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
-from __future__ import absolute_import, division, print_function
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Type
+
+from typing import Any
 
 
 class BaseVrfStrategy(ABC):
@@ -23,7 +23,7 @@ class BaseVrfStrategy(ABC):
     def __init__(
         self,
         fabric_name: str,
-        fabric_data: Optional[Dict[str, Any]] = None,
+        fabric_data: dict[str, Any] | None = None,
         **kwargs,
     ):
         """
@@ -68,7 +68,7 @@ class BaseVrfStrategy(ABC):
     # ── Argument-spec selection ────────────────────────────────────
 
     @abstractmethod
-    def get_argument_spec(self) -> Dict[str, Any]:
+    def get_argument_spec(self) -> dict[str, Any]:
         """
         Return the Ansible argument_spec dict appropriate for this fabric type.
 
@@ -90,33 +90,33 @@ class BaseVrfStrategy(ABC):
     # can instantiate them and set per-call identifiers.
 
     @abstractmethod
-    def vrfs_get_cls(self) -> Type:
+    def vrfs_get_cls(self) -> type:
         """Endpoint class for GET (list) VRFs."""
 
     @abstractmethod
-    def vrfs_post_cls(self) -> Type:
+    def vrfs_post_cls(self) -> type:
         """Endpoint class for POST (create) VRF(s)."""
 
     @abstractmethod
-    def vrf_put_cls(self) -> Type:
+    def vrf_put_cls(self) -> type:
         """Endpoint class for PUT (replace) a single VRF."""
 
     @abstractmethod
-    def vrf_delete_cls(self) -> Type:
+    def vrf_delete_cls(self) -> type:
         """Endpoint class for DELETE a single VRF."""
 
     @abstractmethod
-    def vrf_actions_deploy_post_cls(self) -> Type:
+    def vrf_actions_deploy_post_cls(self) -> type:
         """Endpoint class for POST deploy VRF action."""
 
     @abstractmethod
-    def vrf_actions_remove_post_cls(self) -> Type:
+    def vrf_actions_remove_post_cls(self) -> type:
         """Endpoint class for POST bulk-remove VRF action."""
 
     # ── Query param builders ───────────────────────────────────────
 
     @abstractmethod
-    def build_query_all_params(self, **kwargs) -> Optional[Dict[str, Any]]:
+    def build_query_all_params(self, **kwargs) -> dict[str, Any] | None:
         """Return query-string params dict for the list-VRFs request."""
 
     # ── Endpoint configuration hook ─────────────────────────────────
@@ -131,7 +131,7 @@ class BaseVrfStrategy(ABC):
 
     # ── Child task helpers (no-ops for non-parent strategies) ──────
 
-    def child_fabric_members(self) -> List[str]:
+    def child_fabric_members(self) -> list[str]:
         """
         Return the list of member (child) fabric names.
 
@@ -144,8 +144,8 @@ class BaseVrfStrategy(ABC):
         ]
 
     def build_child_task_args(
-        self, child_fabric_name: str, vrf_configs: List[Dict], state: str
-    ) -> Dict[str, Any]:
+        self, child_fabric_name: str, vrf_configs: list[dict], state: str
+    ) -> dict[str, Any]:
         """
         Build the module_args dict for a child fabric invocation.
 

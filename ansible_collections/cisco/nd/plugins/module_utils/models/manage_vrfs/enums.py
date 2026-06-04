@@ -9,12 +9,7 @@
 Extracted from OpenAPI schema (manage.json) for Nexus Dashboard Manage APIs v1.1.332.
 """
 
-from __future__ import absolute_import, division, print_function
-
-__metaclass__ = type
-
 from enum import Enum
-from typing import List
 
 
 # =============================================================================
@@ -43,7 +38,7 @@ class VrfType(str, Enum):
     VXLAN_EXTERNAL = "vxlanExternal"
 
     @classmethod
-    def choices(cls) -> List[str]:
+    def choices(cls) -> list[str]:
         """Return list of valid choices."""
         return [e.value for e in cls]
 
@@ -68,7 +63,7 @@ class ConfigurationStatus(str, Enum):
     SUCCESS = "success"
 
     @classmethod
-    def choices(cls) -> List[str]:
+    def choices(cls) -> list[str]:
         """Return list of valid choices."""
         return [e.value for e in cls]
 
@@ -84,7 +79,7 @@ class OperationStatus(str, Enum):
     SUCCESS = "success"
 
     @classmethod
-    def choices(cls) -> List[str]:
+    def choices(cls) -> list[str]:
         """Return list of valid choices."""
         return [e.value for e in cls]
 
@@ -108,7 +103,7 @@ class VrfAttachmentSwitchRole(str, Enum):
     AGGREGATE = "aggregate"
 
     @classmethod
-    def choices(cls) -> List[str]:
+    def choices(cls) -> list[str]:
         """Return list of valid choices."""
         return [e.value for e in cls]
 
@@ -127,7 +122,7 @@ class DpuAffinity(str, Enum):
     DPU4 = "dpu4"
 
     @classmethod
-    def choices(cls) -> List[str]:
+    def choices(cls) -> list[str]:
         """Return list of valid choices."""
         return [e.value for e in cls]
 
@@ -144,6 +139,6 @@ class VrfStretchTarget(str, Enum):
     NONE = "none"
 
     @classmethod
-    def choices(cls) -> List[str]:
+    def choices(cls) -> list[str]:
         """Return list of valid choices."""
         return [e.value for e in cls]

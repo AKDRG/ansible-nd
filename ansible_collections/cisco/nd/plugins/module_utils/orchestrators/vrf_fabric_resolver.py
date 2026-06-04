@@ -1,7 +1,6 @@
 # Copyright: (c) 2026, Akshayanat C S (@achengam) <achengam@cisco.com>
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
-from __future__ import absolute_import, division, print_function
 
 """
 VrfFabricResolver — Dynamically selects the correct VRF strategy based on
@@ -21,7 +20,8 @@ Detection algorithm (mirrors dcnm_vrf action plugin logic):
  4. Return the matching concrete strategy instance.
 """
 
-from typing import Any, Dict, FrozenSet, Optional, Tuple
+
+from typing import Any
 
 from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.strategies.base_vrf import (
     BaseVrfStrategy,
@@ -47,7 +47,7 @@ from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.strategies.
 # Error messages returned by the NDFC federated-fabrics API when the site is
 # not part of a federation (standalone or MSD-only deployments).  Mirrors
 # FEDERATION_MANAGER_NOT_FOUND_ERRORS in the dcnm_vrf action plugin.
-_FEDERATION_MANAGER_NOT_FOUND_ERRORS: FrozenSet[str] = frozenset([
+_FEDERATION_MANAGER_NOT_FOUND_ERRORS: frozenset[str] = frozenset([
     "A federation manager does not exist",
     "Invalid JSON response: this API is allowed only for remote user",
     "Invalid JSON response: cannot serve APIs as federation state is secondary. "
@@ -97,9 +97,9 @@ def _response_data(response: Any) -> Any:
 
 def _detect_fabric_type(
     fabric_name: str,
-    fabric_associations: Dict[str, Any],
+    fabric_associations: dict[str, Any],
     data_type: str,
-) -> Tuple[Optional[str], Optional[Dict]]:
+) -> tuple[str | None, dict | None]:
     """
     Classify a fabric based on its properties in the fabric associations dict.
 
@@ -117,7 +117,7 @@ def _detect_fabric_type(
     fabric_data = fabric_associations[fabric_name]
     fabric_type = fabric_data.get("fabricType")
     fabric_state = fabric_data.get("fabricState")
-    detected_type: Optional[str] = None
+    detected_type: str | None = None
 
     if data_type == "mcfg":
         if fabric_type == "MFD":
@@ -225,14 +225,14 @@ class VrfFabricResolver:
         # Build fabricName -> fabric_data mapping from the DATA list.
         # Each entry may contain a nested ``members`` list for parent fabrics.
         # Mirrors the dict-building loop in obtain_federated_fabric_associations.
-        fabric_associations: Dict[str, Any] = {}
+        fabric_associations: dict[str, Any] = {}
         for fabric in (data if isinstance(data, list) else []):
             if not isinstance(fabric, dict):
                 continue
             parent_name = fabric.get("fabricName")
             if not parent_name:
                 continue
-            parent_entry: Dict[str, Any] = {
+            parent_entry: dict[str, Any] = {
                 "fabricName": parent_name,
                 "fabricType": fabric.get("fabricType"),
                 "fabricState": fabric.get("fabricState"),
@@ -244,7 +244,7 @@ class VrfFabricResolver:
                 child_name = child.get("fabricName")
                 if not child_name:
                     continue
-                child_entry: Dict[str, Any] = {
+                child_entry: dict[str, Any] = {
                     "fabricName": child_name,
                     "clusterName": child.get("clusterName"),
                     "fabricType": child.get("fabricType"),
@@ -255,7 +255,7 @@ class VrfFabricResolver:
 
         return fabric_associations
 
-    def _fetch_fabric_associations(self) -> Dict[str, Any]:
+    def _fetch_fabric_associations(self) -> dict[str, Any]:
         """
         GET MSD fabric associations (MSD / standalone scope).
 
@@ -283,7 +283,7 @@ class VrfFabricResolver:
             return {}
 
         data = _response_data(response)
-        fabric_associations: Dict[str, Any] = {}
+        fabric_associations: dict[str, Any] = {}
         for fabric in (data if isinstance(data, list) else []):
             if not isinstance(fabric, dict):
                 continue
@@ -292,7 +292,7 @@ class VrfFabricResolver:
                 continue
             if fabric_name not in fabric_associations:
                 fabric_associations[fabric_name] = {}
-            fabric_data: Dict[str, Any] = {
+            fabric_data: dict[str, Any] = {
                 "fabricName": fabric_name,
                 "fabricType": fabric.get("fabricType"),
                 "fabricState": fabric.get("fabricState"),
@@ -313,8 +313,8 @@ class VrfFabricResolver:
         return fabric_associations
 
     def _fetch_manage_fabric_details(
-        self, fabric_name: str, cluster_name: Optional[str] = None
-    ) -> Dict[str, Any]:
+        self, fabric_name: str, cluster_name: str | None = None
+    ) -> dict[str, Any]:
         """
         GET ND Manage fabric details for the target fabric.
 
@@ -334,7 +334,7 @@ class VrfFabricResolver:
         data = _response_data(response)
         return data if isinstance(data, dict) else {}
 
-    def _enrich_with_manage_fabric_details(self, fabric_data: Dict) -> Dict:
+    def _enrich_with_manage_fabric_details(self, fabric_data: dict) -> dict:
         """
         Add ``vrfType`` and Manage fabric details to fabric_data when available.
 
@@ -360,7 +360,7 @@ class VrfFabricResolver:
             enriched["manageFabricDetails"] = details
         return enriched
 
-    def _resolve_fabric_type(self) -> Tuple[str, Dict]:
+    def _resolve_fabric_type(self) -> tuple[str, dict]:
         """
         Run the two-phase detection logic (mcfg → msd fallback).
 
@@ -402,7 +402,7 @@ class VrfFabricResolver:
             )
         return fabric_type, fabric_data
 
-    def _build_strategy(self, fabric_type: str, fabric_data: Dict) -> BaseVrfStrategy:
+    def _build_strategy(self, fabric_type: str, fabric_data: dict) -> BaseVrfStrategy:
         """Instantiate and return the strategy that matches fabric_type."""
         common = dict(
             fabric_name=self.fabric_name,
@@ -427,7 +427,7 @@ class VrfFabricResolver:
 
     @staticmethod
     def strategy_from_fabric_details(
-        fabric_name: str, fabric_details: Dict
+        fabric_name: str, fabric_details: dict
     ) -> BaseVrfStrategy:
         """
         Build a strategy from a fabric_details dict, accepting two forms:
@@ -442,7 +442,7 @@ class VrfFabricResolver:
         """
         # Accept cluster_name from either key form.
         cluster_name = fabric_details.get("cluster_name") or fabric_details.get("clusterName")
-        kwargs: Dict = dict(fabric_name=fabric_name, fabric_data=fabric_details)
+        kwargs: dict = dict(fabric_name=fabric_name, fabric_data=fabric_details)
 
         # Internal type string (coordinator fast-path) takes priority.
         ft_internal = fabric_details.get("fabric_type")

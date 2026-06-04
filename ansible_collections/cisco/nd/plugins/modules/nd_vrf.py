@@ -4,10 +4,6 @@
 # Copyright: (c) 2026, Akshayanat C S (@achengam) <achengam@cisco.com>
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
-from __future__ import absolute_import, division, print_function
-
-__metaclass__ = type
-
 DOCUMENTATION = r"""
 ---
 module: nd_vrf
@@ -15,13 +11,14 @@ version_added: "1.0.0"
 short_description: Manages VRF definitions on Cisco Nexus Dashboard.
 description:
   - Manages VRF definitions on Cisco Nexus Dashboard across standalone,
-    Multisite (MSD), and Multicluster (MFD) fabric topologies.
-  - This module manages *VRF definitions only* (identity, custom templates,
-    VLAN/SVI, TRM, routing, netflow, route targets). VRF attachment and
-    deployment to switches is handled by a separate module.
+    Multisite (MSD), and Multicluster (MCFG) fabric topologies.
+  - This module manages VRF definitions, parent or standalone VRF switch
+    attachments, and optional deployment of pending VRF changes.
+  - Supported VRF definition properties include identity, custom templates,
+    VLAN/SVI, security group defaults, TRM, routing, netflow, and route targets.
   - Automatically detects fabric type from the ND API and routes to the
     appropriate workflow without requiring extra user input.
-  - For parent fabrics (MSD / MFD), supports child-fabric coordination
+  - For parent fabrics (MSD / MCFG), supports child-fabric coordination
     via the C(child_fabric_config) parameter inside each VRF definition.
   - Child fabrics only permit C(state=query) when targeted directly;
     all write operations must be driven through the parent fabric.
@@ -51,10 +48,14 @@ options:
     description:
       - List of VRF definition configurations to manage.
       - Each element defines a VRF with identity, template, VLAN/SVI,
-        routing, TRM, and other settings.
+        routing, TRM, security, attachment, deployment, and other settings.
+      - On standalone fabrics, all VRF definition, attachment, and deployment
+        options are applied directly to the target fabric.
       - For parent fabrics each item may include a C(child_fabric_config)
-        list to provide per-child-fabric overrides (TRM, BGP auth,
-        netflow, and MVPN route targets).
+        list to provide per-child-fabric overrides. The parent-level
+        C(attach), C(deploy), and C(deploy_type) options are applied only on
+        the parent fabric and are not sent to child fabrics.
+      - For child fabrics targeted directly, only C(state=query) is supported.
     type: list
     elements: dict
     required: true
@@ -106,21 +107,51 @@ options:
           - Supported only when C(vrf_type=userDefined).
           - Values must be strings as required by the ND schema.
         type: dict
+      default_security_action:
+        description:
+          - Default security group enforcement action.
+          - Requires security group support to be enabled in fabric settings.
+          - Supported on standalone and parent VRF definitions.
+        type: str
+        choices:
+          - unenforcedOrNone
+          - enforcedPermit
+          - enforcedDeny
+      default_security_group_tag:
+        description:
+          - Default security group tag ID (16-65535).
+          - Requires security group support to be enabled in fabric settings.
+          - Supported on standalone and parent VRF definitions.
+        type: int
       vlan_id:
-        description: VLAN ID for the VRF SVI (2-4094). Not used when C(l3vni_wo_vlan=true).
+        description:
+          - VLAN ID for the VRF SVI (2-4094).
+          - Not used when C(l3vni_wo_vlan=true).
+          - Supported on standalone and parent VRF definitions; child fabrics
+            inherit the parent value and cannot override it through
+            C(child_fabric_config).
         type: int
       vrf_vlan_name:
-        description: VLAN name for the VRF SVI.
+        description:
+          - VLAN name for the VRF SVI.
+          - Supported on standalone and parent VRF definitions.
         type: str
       vrf_intf_desc:
-        description: Description for the VRF SVI interface.
+        description:
+          - Description for the VRF SVI interface.
+          - Supported on standalone and parent VRF definitions.
         type: str
       vrf_int_mtu:
-        description: MTU for the VRF SVI interface (68-9216).
+        description:
+          - MTU for the VRF SVI interface (68-9216).
+          - Supported on standalone and parent VRF definitions.
         type: int
         default: 9216
       l3vni_wo_vlan:
-        description: Configure L3VNI without VLAN/SVI.
+        description:
+          - Configure L3VNI without VLAN/SVI.
+          - Supported on standalone and parent VRF definitions.
+          - May also be overridden per child fabric under C(child_fabric_config).
         type: bool
         default: false
       vrf_description:
@@ -155,23 +186,35 @@ options:
         type: bool
         default: false
       import_vpn_rt:
-        description: VPN import route targets.
+        description:
+          - VPN import route targets.
+          - Supported on standalone and parent VRF definitions.
         type: list
         elements: str
       export_vpn_rt:
-        description: VPN export route targets.
+        description:
+          - VPN export route targets.
+          - Supported on standalone and parent VRF definitions.
         type: list
         elements: str
       import_evpn_rt:
-        description: EVPN import route targets.
+        description:
+          - EVPN import route targets.
+          - Supported on standalone and parent VRF definitions.
         type: list
         elements: str
       export_evpn_rt:
-        description: EVPN export route targets.
+        description:
+          - EVPN export route targets.
+          - Supported on standalone and parent VRF definitions.
         type: list
         elements: str
       trm_enable:
-        description: Enable Tenant Routed Multicast.
+        description:
+          - Enable Tenant Routed Multicast.
+          - Requires TRM support to be enabled in fabric settings.
+          - Supported on standalone and parent VRF definitions.
+          - May also be overridden per child fabric under C(child_fabric_config).
         type: bool
         default: false
       no_rp:
@@ -207,30 +250,52 @@ options:
         type: list
         elements: str
       adv_host_routes:
-        description: Advertise /32 and /128 host routes to edge routers.
+        description:
+          - Advertise /32 and /128 host routes to edge routers.
+          - Supported on standalone and parent VRF definitions.
+          - May also be overridden per child fabric under C(child_fabric_config).
         type: bool
         default: false
       adv_default_routes:
-        description: Advertise default route internally.
+        description:
+          - Advertise default route internally.
+          - Supported on standalone and parent VRF definitions.
+          - May also be overridden per child fabric under C(child_fabric_config).
         type: bool
         default: true
       static_default_route:
-        description: Configure static default route.
+        description:
+          - Configure static default route.
+          - Supported on standalone and parent VRF definitions.
+          - May also be overridden per child fabric under C(child_fabric_config).
         type: bool
         default: true
       bgp_password:
-        description: BGP neighbour password (4-32 characters).
+        description:
+          - BGP neighbour password (4-32 characters).
+          - Supported on standalone and parent VRF definitions.
+          - May also be overridden per child fabric under C(child_fabric_config).
         type: str
       bgp_passwd_encrypt:
-        description: BGP password encryption type, 3 (3DES) or 7 (Cisco Type-7).
+        description:
+          - BGP password encryption type, 3 (3DES) or 7 (Cisco Type-7).
+          - Required when C(bgp_password) is set.
+          - May also be overridden per child fabric under C(child_fabric_config).
         type: int
         choices: [ 3, 7 ]
       netflow_enable:
-        description: Enable netflow on VRF-Lite sub-interface.
+        description:
+          - Enable netflow for the VRF fabric data.
+          - Requires netflow support to be enabled in fabric settings.
+          - Supported on standalone and parent VRF definitions.
+          - May also be overridden per child fabric under C(child_fabric_config).
         type: bool
         default: false
       nf_monitor:
-        description: Netflow monitor name. Required when C(netflow_enable=true).
+        description:
+          - Netflow monitor name.
+          - Required when C(netflow_enable=true).
+          - May also be overridden per child fabric under C(child_fabric_config).
         type: str
       deploy:
         description:
@@ -239,6 +304,9 @@ options:
             fabric tasks complete.
           - Applies only to parent/standalone VRF attachments, not child fabric
             override entries.
+          - For C(state=deleted), the C(deploy) value is ignored; the module
+            detaches existing attachments, deploys the detach using
+            C(deploy_type), and then removes the VRF.
         type: bool
         default: true
       deploy_type:
@@ -257,12 +325,18 @@ options:
           - Parent/standalone switch attachment entries for this VRF.
           - Switches are identified by management IP address and resolved to
             ND C(switchId) values before the attachment payload is sent.
+          - If C(attach) entries are present, the module attaches the VRF to
+            those switches.
+          - In C(state=replaced), omitting C(attach) deattaches existing
+            attachments for the matching VRF.
+          - In C(state=overridden), attachments not specified in the desired
+            configuration are deattached.
           - Not supported under C(child_fabric_config).
         type: list
         elements: dict
         suboptions:
           ip_address:
-            description: Management IP address of the switch to attach.
+            description: Management IP address of the switch to attach or detach.
             type: str
             required: true
           loopback_id:
@@ -292,10 +366,13 @@ options:
             elements: str
       child_fabric_config:
         description:
-          - Per-child-fabric override entries (parent fabrics only).
+          - Per-child-fabric override entries for MSD and MCFG parent fabrics.
           - Each entry targets a child member fabric and may override
             TRM, advertising, BGP auth, netflow, and MVPN route-target settings.
           - Omitted fields inherit the parent VRF setting.
+          - C(attach), C(deploy), C(deploy_type), VLAN/SVI fields, VRF
+            identity, custom template fields, and security group fields are not
+            valid inside C(child_fabric_config).
           - Ignored when C(state=deleted); child fabric tasks are not executed
             for delete operations.
         type: list
@@ -368,8 +445,8 @@ extends_documentation_fragment:
 """
 
 EXAMPLES = r"""
-# ── Standalone fabric — create a VRF ─────────────────────────────────────────
-- name: Create VRF on standalone fabric
+# ── Standalone fabric — create a VRF and attach it to a switch ───────────────
+- name: Create VRF on standalone fabric and deploy by switch
   cisco.nd.nd_vrf:
     fabric: fab1
     state: merged
@@ -377,6 +454,31 @@ EXAMPLES = r"""
       - vrf_name: VRF_BLUE
         vrf_id: 50010
         vlan_id: 2001
+        vrf_vlan_name: VRF_BLUE_VLAN
+        vrf_intf_desc: VRF BLUE SVI
+        vrf_description: Blue application VRF
+        import_vpn_rt:
+          - "65000:50010"
+        export_vpn_rt:
+          - "65000:50010"
+        import_evpn_rt:
+          - "65000:50010"
+        export_evpn_rt:
+          - "65000:50010"
+        attach:
+          - ip_address: 192.0.2.10
+            loopback_id: 101
+            loopback_ipv4_address: 10.255.101.1
+            import_vpn_rt:
+              - "65000:50110"
+            export_vpn_rt:
+              - "65000:50110"
+            import_evpn_rt:
+              - "65000:50110"
+            export_evpn_rt:
+              - "65000:50110"
+        deploy: true
+        deploy_type: switch
 
 # ── Standalone fabric — create VRF with TRM ──────────────────────────────────
 - name: Create VRF with Tenant Routed Multicast enabled
@@ -393,7 +495,22 @@ EXAMPLES = r"""
         underlay_mcast_ip: 239.1.1.1
         overlay_mcast_group: 239.1.1.2
 
-# ── Parent fabric — create VRF with child fabric-instance overrides ──────────
+# ── Standalone fabric — create user-defined VRF template payload ─────────────
+- name: Create user-defined VRF
+  cisco.nd.nd_vrf:
+    fabric: fab1
+    state: merged
+    config:
+      - vrf_name: VRF_CUSTOM
+        vrf_type: userDefined
+        vrf_template_name: Custom_VRF_Template
+        vrf_extension_template_name: Custom_VRF_Extension_Template
+        service_vrf_template_name: Custom_Service_VRF_Template
+        vrf_template_config:
+          VRF_NAME: VRF_CUSTOM
+          VRF_ID: "50030"
+
+# ── MSD parent fabric — create VRF with child fabric-instance overrides ──────
 - name: Create VRF on MSD parent with per-child fabric-instance overrides
   cisco.nd.nd_vrf:
     fabric: msd_parent
@@ -401,11 +518,53 @@ EXAMPLES = r"""
     config:
       - vrf_name: VRF_BLUE
         vrf_id: 50010
+        vlan_id: 2001
+        vrf_vlan_name: VRF_BLUE_VLAN
+        adv_host_routes: true
+        adv_default_routes: false
+        static_default_route: false
+        bgp_password: abcdef12
+        bgp_passwd_encrypt: 3
+        attach:
+          - ip_address: 192.0.2.10
+            loopback_id: 101
+            loopback_ipv4_address: 10.255.101.1
+            loopback_ipv6_address: 2001:db8:101::1
+        deploy: true
+        deploy_type: vrf
         child_fabric_config:
           - fabric: child_fabric_1
+            l3vni_wo_vlan: false
             adv_host_routes: true
           - fabric: child_fabric_2
             adv_default_routes: false
+            static_default_route: false
+            bgp_password: abcdef12
+            bgp_passwd_encrypt: 3
+
+# ── MCFG parent fabric — create VRF with child fabric-instance overrides ─────
+- name: Create VRF on MCFG parent with child fabric overrides
+  cisco.nd.nd_vrf:
+    fabric: mcfg_parent
+    state: merged
+    config:
+      - vrf_name: VRF_GREEN
+        vrf_id: 50040
+        vlan_id: 2040
+        loopback_route_tag: 12345
+        max_bgp_paths: 4
+        max_ibgp_paths: 4
+        ipv6_linklocal_enable: true
+        disable_rt_auto: true
+        import_vpn_rt:
+          - "65000:50040"
+        export_vpn_rt:
+          - "65000:50040"
+        child_fabric_config:
+          - fabric: cluster_child_1
+            adv_host_routes: true
+            netflow_enable: true
+            nf_monitor: MON1
 
 # ── Child fabric — query only ────────────────────────────────────────────────
 - name: Query VRFs on a child fabric (write ops must go through parent)
@@ -437,33 +596,6 @@ EXAMPLES = r"""
 """
 
 RETURN = r"""
-changed:
-  description: Whether any change was made.
-  type: bool
-  returned: always
-failed:
-  description: Whether the operation failed.
-  type: bool
-  returned: always
-fabric_type:
-  description: >
-    Detected fabric type.
-    One of: standalone, multisite_parent, multicluster_parent,
-    multisite_child, multicluster_child.
-  type: str
-  returned: always
-workflow:
-  description: Description of the workflow path that was executed.
-  type: str
-  returned: always
-parent_fabric:
-  description: Parent fabric operation results (parent workflows only).
-  type: dict
-  returned: when fabric is a parent and child_fabric_config is present
-child_fabrics:
-  description: Per-child-fabric operation results.
-  type: list
-  returned: when fabric is a parent and child_fabric_config is present
 """
 
 from ansible.module_utils.basic import AnsibleModule

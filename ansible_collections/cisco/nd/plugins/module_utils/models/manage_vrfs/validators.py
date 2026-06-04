@@ -6,13 +6,8 @@
 
 """Common validators for VRF-related fields."""
 
-from __future__ import absolute_import, division, print_function
-
-__metaclass__ = type
-
 import re
 from ipaddress import ip_address, ip_network
-from typing import List, Optional, Union
 
 
 class VrfValidators:
@@ -32,7 +27,7 @@ class VrfValidators:
     # ------------------------------------------------------------------
 
     @staticmethod
-    def validate_ip_address(v: Optional[str]) -> Optional[str]:
+    def validate_ip_address(v: str | None) -> str | None:
         """Validate IPv4 or IPv6 address."""
         if v is None:
             return None
@@ -46,7 +41,7 @@ class VrfValidators:
             raise ValueError(f"Invalid IP address format: {v}")
 
     @staticmethod
-    def validate_ipv4_address(v: Optional[str]) -> Optional[str]:
+    def validate_ipv4_address(v: str | None) -> str | None:
         """Validate IPv4 address."""
         if v is None:
             return None
@@ -62,7 +57,7 @@ class VrfValidators:
             raise ValueError(f"Invalid IPv4 address format: {v}") from exc
 
     @staticmethod
-    def validate_cidrv4(v: Optional[str]) -> Optional[str]:
+    def validate_cidrv4(v: str | None) -> str | None:
         """Validate IPv4 CIDR notation (IP/mask)."""
         if v is None:
             return None
@@ -80,7 +75,7 @@ class VrfValidators:
             raise ValueError(f"Invalid IPv4 CIDR format: {v}") from exc
 
     @staticmethod
-    def validate_cidrv6(v: Optional[str]) -> Optional[str]:
+    def validate_cidrv6(v: str | None) -> str | None:
         """Validate IPv6 CIDR notation (IPv6/prefix-length)."""
         if v is None:
             return None
@@ -102,7 +97,7 @@ class VrfValidators:
             raise ValueError(f"Invalid IPv6 CIDR format: {v}") from exc
 
     @staticmethod
-    def validate_ipv6_address(v: Optional[str]) -> Optional[str]:
+    def validate_ipv6_address(v: str | None) -> str | None:
         """Validate IPv6 address."""
         if v is None:
             return None
@@ -118,7 +113,7 @@ class VrfValidators:
             raise ValueError(f"Invalid IPv6 address format: {v}") from exc
 
     @staticmethod
-    def validate_route_target(v: Optional[str]) -> Optional[str]:
+    def validate_route_target(v: str | None) -> str | None:
         """
         Validate a single route target string.
 
@@ -146,7 +141,7 @@ class VrfValidators:
         return v
 
     @staticmethod
-    def validate_vrf_name(v: Optional[str]) -> Optional[str]:
+    def validate_vrf_name(v: str | None) -> str | None:
         """
         Validate VRF name.
 
@@ -165,7 +160,7 @@ class VrfValidators:
         return v
 
     @staticmethod
-    def validate_vlan_id(v: Optional[int]) -> Optional[int]:
+    def validate_vlan_id(v: int | None) -> int | None:
         """
         Validate VLAN ID.
 
@@ -181,7 +176,7 @@ class VrfValidators:
         return v
 
     @staticmethod
-    def validate_loopback_id(v: Optional[int]) -> Optional[int]:
+    def validate_loopback_id(v: int | None) -> int | None:
         """
         Validate loopback interface ID.
 
@@ -197,7 +192,7 @@ class VrfValidators:
         return v
 
     @staticmethod
-    def validate_mtu(v: Optional[int]) -> Optional[int]:
+    def validate_mtu(v: int | None) -> int | None:
         """
         Validate interface MTU.
 
@@ -213,7 +208,7 @@ class VrfValidators:
         return v
 
     @staticmethod
-    def validate_dot1q_id(v: Optional[int]) -> Optional[int]:
+    def validate_dot1q_id(v: int | None) -> int | None:
         """
         Validate 802.1Q VLAN tag ID.
 
@@ -229,7 +224,7 @@ class VrfValidators:
         return v
 
     @staticmethod
-    def validate_vrf_vlan_name(v: Optional[str]) -> Optional[str]:
+    def validate_vrf_vlan_name(v: str | None) -> str | None:
         """
         Validate VLAN name used in VRF attachment instance values.
 
@@ -250,7 +245,7 @@ class VrfValidators:
         return v
 
     @staticmethod
-    def validate_overlay_mcast_group(v: Optional[str]) -> Optional[str]:
+    def validate_overlay_mcast_group(v: str | None) -> str | None:
         """
         Validate that an IPv4 address is in the 224.0.0.0/4 multicast range.
 
@@ -279,7 +274,7 @@ class VrfValidators:
             ) from exc
 
     @staticmethod
-    def validate_bgp_passwd_encrypt(v: Optional[int]) -> Optional[int]:
+    def validate_bgp_passwd_encrypt(v: int | None) -> int | None:
         """
         Validate BGP password key type.
 
@@ -295,8 +290,8 @@ class VrfValidators:
 
     @staticmethod
     def normalize_route_targets(
-        v: Optional[Union[str, List[str]]]
-    ) -> Optional[List[str]]:
+        v: str | list[str] | None
+    ) -> list[str] | None:
         """
         Normalise a route-target value to a validated list.
 
@@ -333,7 +328,7 @@ class VrfValidators:
 
     @classmethod
     def require_vrf_name(
-        cls, v: Optional[str], field: str = "vrf_name"
+        cls, v: str | None, field: str = "vrf_name"
     ) -> str:
         """Validate and require a non-empty VRF name."""
         result = cls.validate_vrf_name(v)

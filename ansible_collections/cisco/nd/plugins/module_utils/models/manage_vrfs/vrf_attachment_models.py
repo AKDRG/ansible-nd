@@ -17,11 +17,7 @@ Covers:
 - GET  /fabrics/{fabricName}/vrfFlowRules/vrfs
 """
 
-from __future__ import absolute_import, division, print_function
-
-__metaclass__ = type
-
-from typing import ClassVar, List, Literal, Optional
+from typing import ClassVar, Literal
 
 from ansible_collections.cisco.nd.plugins.module_utils.common.pydantic_compat import (
     Field,
@@ -57,8 +53,8 @@ class DpuInstanceValuesModel(NDNestedModel):
     Based on: components/schemas/dpuInstanceValues
     """
 
-    identifiers: ClassVar[List[str]] = []
-    dpu_secure: Optional[bool] = Field(
+    identifiers: ClassVar[list[str]] = []
+    dpu_secure: bool | None = Field(
         default=False,
         alias="dpuSecure",
         description=(
@@ -66,7 +62,7 @@ class DpuInstanceValuesModel(NDNestedModel):
             "and the host switch"
         ),
     )
-    dpu_affinity: Optional[DpuAffinity] = Field(
+    dpu_affinity: DpuAffinity | None = Field(
         default=None,
         alias="dpuAffinity",
         description="Affinity of the VRF attachment to a specific DPU",
@@ -81,9 +77,9 @@ class VrfAttachmentInstanceValuesModel(NDNestedModel):
     (allOf: dpuInstanceValues + additional fields)
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     # dpuInstanceValues fields
-    dpu_secure: Optional[bool] = Field(
+    dpu_secure: bool | None = Field(
         default=False,
         alias="dpuSecure",
         description=(
@@ -91,50 +87,50 @@ class VrfAttachmentInstanceValuesModel(NDNestedModel):
             "and the host switch"
         ),
     )
-    dpu_affinity: Optional[DpuAffinity] = Field(
+    dpu_affinity: DpuAffinity | None = Field(
         default=None,
         alias="dpuAffinity",
         description="Affinity of the VRF attachment to a specific DPU",
     )
     # vrfAttachmentInstanceValues additional fields
-    loopback_id: Optional[int] = Field(
+    loopback_id: int | None = Field(
         default=None,
         alias="loopbackId",
         ge=0,
         le=1023,
         description="Loopback interface identifier (0-1023)",
     )
-    loopback_ipv4_address: Optional[str] = Field(
+    loopback_ipv4_address: str | None = Field(
         default=None,
         alias="loopbackIpv4Address",
         description="IPv4 address of the loopback interface",
     )
-    loopback_ipv6_address: Optional[str] = Field(
+    loopback_ipv6_address: str | None = Field(
         default=None,
         alias="loopbackIpv6Address",
         description="IPv6 address of the loopback interface",
     )
-    route_target_import: Optional[List[str]] = Field(
+    route_target_import: list[str] | None = Field(
         default=None,
         alias="routeTargetImport",
         description="List of VPN import route targets",
     )
-    route_target_export: Optional[List[str]] = Field(
+    route_target_export: list[str] | None = Field(
         default=None,
         alias="routeTargetExport",
         description="List of VPN export route targets",
     )
-    evpn_route_target_import: Optional[List[str]] = Field(
+    evpn_route_target_import: list[str] | None = Field(
         default=None,
         alias="evpnRouteTargetImport",
         description="List of EVPN import route targets",
     )
-    evpn_route_target_export: Optional[List[str]] = Field(
+    evpn_route_target_export: list[str] | None = Field(
         default=None,
         alias="evpnRouteTargetExport",
         description="List of EVPN export route targets",
     )
-    vrf_vlan_name: Optional[str] = Field(
+    vrf_vlan_name: str | None = Field(
         default=None,
         alias="vrfVlanName",
         max_length=128,
@@ -143,7 +139,7 @@ class VrfAttachmentInstanceValuesModel(NDNestedModel):
             "Must not contain ?, \\, or whitespace."
         ),
     )
-    svi_ipv4_address: Optional[str] = Field(
+    svi_ipv4_address: str | None = Field(
         default=None,
         alias="sviIpv4Address",
         description=(
@@ -151,24 +147,24 @@ class VrfAttachmentInstanceValuesModel(NDNestedModel):
             "Applicable for classic LAN VRFs only."
         ),
     )
-    svi_neighbor_ipv4_address: Optional[str] = Field(
+    svi_neighbor_ipv4_address: str | None = Field(
         default=None,
         alias="sviNeighborIpv4Address",
         description="IPv4 address of the SVI neighbor",
     )
-    svi_ipv6_address: Optional[str] = Field(
+    svi_ipv6_address: str | None = Field(
         default=None,
         alias="sviIpv6Address",
         description=(
             "IPv6 address with prefix in CIDR notation for the SVI"
         ),
     )
-    svi_neighbor_ipv6_address: Optional[str] = Field(
+    svi_neighbor_ipv6_address: str | None = Field(
         default=None,
         alias="sviNeighborIpv6Address",
         description="IPv6 address of the SVI neighbor",
     )
-    vrf_interface_description: Optional[str] = Field(
+    vrf_interface_description: str | None = Field(
         default=None,
         alias="vrfInterfaceDescription",
         min_length=1,
@@ -178,27 +174,27 @@ class VrfAttachmentInstanceValuesModel(NDNestedModel):
 
     @field_validator("loopback_ipv4_address", "svi_neighbor_ipv4_address", mode="before")
     @classmethod
-    def validate_ipv4_fields(cls, v: Optional[str]) -> Optional[str]:
+    def validate_ipv4_fields(cls, v: str | None) -> str | None:
         return VrfValidators.validate_ipv4_address(v)
 
     @field_validator("loopback_ipv6_address", "svi_neighbor_ipv6_address", mode="before")
     @classmethod
-    def validate_ipv6_fields(cls, v: Optional[str]) -> Optional[str]:
+    def validate_ipv6_fields(cls, v: str | None) -> str | None:
         return VrfValidators.validate_ipv6_address(v)
 
     @field_validator("svi_ipv4_address", mode="before")
     @classmethod
-    def validate_svi_ipv4(cls, v: Optional[str]) -> Optional[str]:
+    def validate_svi_ipv4(cls, v: str | None) -> str | None:
         return VrfValidators.validate_cidrv4(v)
 
     @field_validator("svi_ipv6_address", mode="before")
     @classmethod
-    def validate_svi_ipv6(cls, v: Optional[str]) -> Optional[str]:
+    def validate_svi_ipv6(cls, v: str | None) -> str | None:
         return VrfValidators.validate_cidrv6(v)
 
     @field_validator("vrf_vlan_name", mode="before")
     @classmethod
-    def validate_vrf_vlan_name(cls, v: Optional[str]) -> Optional[str]:
+    def validate_vrf_vlan_name(cls, v: str | None) -> str | None:
         return VrfValidators.validate_vrf_vlan_name(v)
 
 
@@ -215,27 +211,27 @@ class VrfExtensionModel(NDNestedModel):
     (allOf: vrfExtensionCommon + additional fields)
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     # vrfExtensionCommon required fields
     interface_name: str = Field(
-        ...,
+        default=...,
         alias="interfaceName",
         description="Name of the interface used for the VRF-Lite extension",
     )
     dot1q_id: int = Field(
-        ...,
+        default=...,
         alias="dot1qId",
         ge=2,
         le=4094,
         description="802.1Q VLAN ID (2-4094)",
     )
     neighbor_asn: str = Field(
-        ...,
+        default=...,
         alias="neighborAsn",
         description="ASN of the BGP neighbor on this extension",
     )
     # vrfExtensionCommon optional fields
-    ipv4_address: Optional[str] = Field(
+    ipv4_address: str | None = Field(
         default=None,
         alias="ipv4Address",
         description=(
@@ -243,12 +239,12 @@ class VrfExtensionModel(NDNestedModel):
             "interface"
         ),
     )
-    neighbor_ipv4_address: Optional[str] = Field(
+    neighbor_ipv4_address: str | None = Field(
         default=None,
         alias="neighborIpv4Address",
         description="IPv4 address of the BGP neighbor",
     )
-    ipv6_address: Optional[str] = Field(
+    ipv6_address: str | None = Field(
         default=None,
         alias="ipv6Address",
         description=(
@@ -256,33 +252,33 @@ class VrfExtensionModel(NDNestedModel):
             "interface"
         ),
     )
-    neighbor_ipv6_address: Optional[str] = Field(
+    neighbor_ipv6_address: str | None = Field(
         default=None,
         alias="neighborIpv6Address",
         description="IPv6 address of the BGP neighbor",
     )
     # vrfExtension additional fields
-    mtu: Optional[int] = Field(
+    mtu: int | None = Field(
         default=None,
         ge=68,
         le=9216,
         description="MTU for the extension interface (68-9216)",
     )
-    route_tag: Optional[int] = Field(
+    route_tag: int | None = Field(
         default=None,
         alias="routeTag",
         ge=0,
         le=4294967295,
         description="Route tag applied to this extension",
     )
-    netflow: Optional[bool] = Field(
+    netflow: bool | None = Field(
         default=False,
         description=(
             "Enable netflow on the VRF-Lite sub-interface. "
             "Supported only if netflow is enabled on the fabric."
         ),
     )
-    auto_peer_config: Optional[bool] = Field(
+    auto_peer_config: bool | None = Field(
         default=False,
         alias="autoPeerConfig",
         description=(
@@ -290,7 +286,7 @@ class VrfExtensionModel(NDNestedModel):
             "(read-only)"
         ),
     )
-    peer_vrf_name: Optional[str] = Field(
+    peer_vrf_name: str | None = Field(
         default=None,
         alias="peerVrfName",
         description=(
@@ -298,22 +294,22 @@ class VrfExtensionModel(NDNestedModel):
             "on the neighbor switch"
         ),
     )
-    route_map_in: Optional[str] = Field(
+    route_map_in: str | None = Field(
         default=None,
         alias="routeMapIn",
         description="Name of the inbound IPv4 route map",
     )
-    route_map_out: Optional[str] = Field(
+    route_map_out: str | None = Field(
         default=None,
         alias="routeMapOut",
         description="Name of the outbound IPv4 route map",
     )
-    ipv6_route_map_in: Optional[str] = Field(
+    ipv6_route_map_in: str | None = Field(
         default=None,
         alias="ipv6RouteMapIn",
         description="Name of the inbound IPv6 route map",
     )
-    ipv6_route_map_out: Optional[str] = Field(
+    ipv6_route_map_out: str | None = Field(
         default=None,
         alias="ipv6RouteMapOut",
         description="Name of the outbound IPv6 route map",
@@ -321,22 +317,22 @@ class VrfExtensionModel(NDNestedModel):
 
     @field_validator("ipv4_address", mode="before")
     @classmethod
-    def validate_ipv4_address_cidr(cls, v: Optional[str]) -> Optional[str]:
+    def validate_ipv4_address_cidr(cls, v: str | None) -> str | None:
         return VrfValidators.validate_cidrv4(v)
 
     @field_validator("neighbor_ipv4_address", mode="before")
     @classmethod
-    def validate_neighbor_ipv4(cls, v: Optional[str]) -> Optional[str]:
+    def validate_neighbor_ipv4(cls, v: str | None) -> str | None:
         return VrfValidators.validate_ipv4_address(v)
 
     @field_validator("ipv6_address", mode="before")
     @classmethod
-    def validate_ipv6_address_cidr(cls, v: Optional[str]) -> Optional[str]:
+    def validate_ipv6_address_cidr(cls, v: str | None) -> str | None:
         return VrfValidators.validate_cidrv6(v)
 
     @field_validator("neighbor_ipv6_address", mode="before")
     @classmethod
-    def validate_neighbor_ipv6(cls, v: Optional[str]) -> Optional[str]:
+    def validate_neighbor_ipv6(cls, v: str | None) -> str | None:
         return VrfValidators.validate_ipv6_address(v)
 
 
@@ -353,28 +349,28 @@ class VrfAttachmentModel(NDNestedModel):
     (allOf: vrfAttachmentCommon + attach field)
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     # vrfAttachmentCommon required fields
     vrf_name: str = Field(
-        ...,
+        default=...,
         alias="vrfName",
         max_length=94,
         description="Name of the VRF to attach or detach",
     )
     switch_id: str = Field(
-        ...,
+        default=...,
         alias="switchId",
         description="Serial number of the target switch",
     )
     # vrfAttachmentCommon optional fields
-    vlan_id: Optional[int] = Field(
+    vlan_id: int | None = Field(
         default=None,
         alias="vlanId",
         ge=2,
         le=4094,
         description="VLAN ID (2-4094) to use for the VRF attachment",
     )
-    instance_values: Optional[VrfAttachmentInstanceValuesModel] = Field(
+    instance_values: VrfAttachmentInstanceValuesModel | None = Field(
         default=None,
         alias="instanceValues",
         description=(
@@ -382,14 +378,14 @@ class VrfAttachmentModel(NDNestedModel):
             "Set to null to remove all instance values."
         ),
     )
-    extension_values: Optional[List[VrfExtensionModel]] = Field(
+    extension_values: list[VrfExtensionModel] | None = Field(
         default=None,
         alias="extensionValues",
         description=(
             "List of VRF-Lite extension configurations for this attachment"
         ),
     )
-    extra_config: Optional[str] = Field(
+    extra_config: str | None = Field(
         default=None,
         alias="extraConfig",
         description=(
@@ -398,7 +394,7 @@ class VrfAttachmentModel(NDNestedModel):
     )
     # vrfAttachment additional field
     attach: bool = Field(
-        ...,
+        default=...,
         description=(
             "True to attach the VRF to the switch; "
             "False to detach it."
@@ -414,12 +410,12 @@ class VrfAttachDetachRequestModel(NDBaseModel):
     Path: POST /fabrics/{fabricName}/vrfAttachments
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    attachments: Optional[List[VrfAttachmentModel]] = Field(
+    attachments: list[VrfAttachmentModel] | None = Field(
         default=None,
         description="List of VRF attach or detach operations",
     )
@@ -433,26 +429,26 @@ class VrfAttachmentStatusModel(NDNestedModel):
     (allOf: schemas-multiStatusBase + switchId + switchName)
     """
 
-    identifiers: ClassVar[List[str]] = []
-    vrf_name: Optional[str] = Field(
+    identifiers: ClassVar[list[str]] = []
+    vrf_name: str | None = Field(
         default=None,
         alias="vrfName",
         description="Name of the VRF",
     )
-    status: Optional[OperationStatus] = Field(
+    status: OperationStatus | None = Field(
         default=None,
         description="Outcome of the attach or detach operation",
     )
-    message: Optional[str] = Field(
+    message: str | None = Field(
         default=None,
         description="Error message in case of operation failure",
     )
-    switch_id: Optional[str] = Field(
+    switch_id: str | None = Field(
         default=None,
         alias="switchId",
         description="Serial number of the switch",
     )
-    switch_name: Optional[str] = Field(
+    switch_name: str | None = Field(
         default=None,
         alias="switchName",
         description="Name of the switch",
@@ -468,12 +464,12 @@ class VrfAttach207ResponseModel(NDBaseModel):
           POST /fabrics/{fabricName}/vrfAttachments/import response
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    results: Optional[List[VrfAttachmentStatusModel]] = Field(
+    results: list[VrfAttachmentStatusModel] | None = Field(
         default=None,
         description=(
             "Status of each attachment operation. Contains only entries "
@@ -490,75 +486,75 @@ class VrfAttachmentDetailModel(NDNestedModel):
     (allOf: vrfAttachmentCommon + vrfAttachmentQueryCommon + additional)
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     # vrfAttachmentCommon fields
-    vrf_name: Optional[str] = Field(
+    vrf_name: str | None = Field(
         default=None,
         alias="vrfName",
         max_length=94,
         description="Name of the VRF",
     )
-    switch_id: Optional[str] = Field(
+    switch_id: str | None = Field(
         default=None,
         alias="switchId",
         description="Serial number of the switch",
     )
-    vlan_id: Optional[int] = Field(
+    vlan_id: int | None = Field(
         default=None,
         alias="vlanId",
         ge=2,
         le=4094,
         description="VLAN ID for the VRF attachment",
     )
-    instance_values: Optional[VrfAttachmentInstanceValuesModel] = Field(
+    instance_values: VrfAttachmentInstanceValuesModel | None = Field(
         default=None,
         alias="instanceValues",
         description="Per-attachment instance configuration",
     )
-    extension_values: Optional[List[VrfExtensionModel]] = Field(
+    extension_values: list[VrfExtensionModel] | None = Field(
         default=None,
         alias="extensionValues",
         description="VRF-Lite extension configurations",
     )
-    extra_config: Optional[str] = Field(
+    extra_config: str | None = Field(
         default=None,
         alias="extraConfig",
         description="Additional CLI configuration for this attachment",
     )
     # vrfAttachmentQueryCommon fields
-    switch_name: Optional[str] = Field(
+    switch_name: str | None = Field(
         default=None,
         alias="switchName",
         description="Name of the switch",
     )
-    status: Optional[ConfigurationStatus] = Field(
+    status: ConfigurationStatus | None = Field(
         default=None,
         description="Deployment status of the VRF on the switch",
     )
-    attach: Optional[bool] = Field(
+    attach: bool | None = Field(
         default=None,
         description=(
             "True if the VRF is attached / should be attached "
             "to the switch"
         ),
     )
-    switch_role: Optional[VrfAttachmentSwitchRole] = Field(
+    switch_role: VrfAttachmentSwitchRole | None = Field(
         default=None,
         alias="switchRole",
         description="Role of the switch in the fabric",
     )
     # vrfAttachmentDetail extra fields
-    peer_switch_id: Optional[str] = Field(
+    peer_switch_id: str | None = Field(
         default=None,
         alias="peerSwitchId",
         description="Serial number of the vPC peer switch (if applicable)",
     )
-    error_message: Optional[str] = Field(
+    error_message: str | None = Field(
         default=None,
         alias="errorMessage",
         description="Error message associated with a failed deployment",
     )
-    show_vlan: Optional[bool] = Field(
+    show_vlan: bool | None = Field(
         default=None,
         alias="showVlan",
         description=(
@@ -566,12 +562,12 @@ class VrfAttachmentDetailModel(NDNestedModel):
             "this attachment entry"
         ),
     )
-    vrf_id: Optional[int] = Field(
+    vrf_id: int | None = Field(
         default=None,
         alias="vrfId",
         description="Unique identifier of the VRF",
     )
-    switch_fabric_name: Optional[str] = Field(
+    switch_fabric_name: str | None = Field(
         default=None,
         alias="switchFabricName",
         description=(
@@ -593,12 +589,12 @@ class VrfAttachmentExportRequestModel(NDBaseModel):
     Path: POST /fabrics/{fabricName}/vrfAttachments/export
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    switch_ids: Optional[List[str]] = Field(
+    switch_ids: list[str] | None = Field(
         default=None,
         alias="switchIds",
         description=(
@@ -606,7 +602,7 @@ class VrfAttachmentExportRequestModel(NDBaseModel):
             "If null or empty, all switches are included."
         ),
     )
-    vrf_names: Optional[List[str]] = Field(
+    vrf_names: list[str] | None = Field(
         default=None,
         alias="vrfNames",
         description=(
@@ -624,12 +620,12 @@ class VrfAttachmentQueryRequestModel(NDBaseModel):
     Path: POST /fabrics/{fabricName}/vrfAttachments/query
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    switch_ids: Optional[List[str]] = Field(
+    switch_ids: list[str] | None = Field(
         default=None,
         alias="switchIds",
         description=(
@@ -637,7 +633,7 @@ class VrfAttachmentQueryRequestModel(NDBaseModel):
             "If null or empty, all switches are included."
         ),
     )
-    vrf_names: Optional[List[str]] = Field(
+    vrf_names: list[str] | None = Field(
         default=None,
         alias="vrfNames",
         description=(
@@ -655,16 +651,16 @@ class VrfAttachmentQueryResponseModel(NDBaseModel):
     Schema: ``{ attachments: vrfAttachmentDetail[], meta: Metadata }``
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    attachments: Optional[List[VrfAttachmentDetailModel]] = Field(
+    attachments: list[VrfAttachmentDetailModel] | None = Field(
         default=None,
         description="List of detailed VRF attachment records",
     )
-    meta: Optional[Metadata] = Field(
+    meta: Metadata | None = Field(
         default=None,
         description="Pagination and result-count metadata",
     )
@@ -683,12 +679,12 @@ class VrfFlowRulesTenantsResponseModel(NDBaseModel):
     Path: GET /fabrics/{fabricName}/vrfFlowRules/tenants
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    tenants: Optional[List[str]] = Field(
+    tenants: list[str] | None = Field(
         default=None,
         description=(
             "List of tenant names that have VRF flow rules configured"
@@ -704,12 +700,12 @@ class VrfFlowRulesVrfsResponseModel(NDBaseModel):
     Path: GET /fabrics/{fabricName}/vrfFlowRules/vrfs
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    vrfs: Optional[List[str]] = Field(
+    vrfs: list[str] | None = Field(
         default=None,
         description=(
             "List of VRF names that have flow rules configured"

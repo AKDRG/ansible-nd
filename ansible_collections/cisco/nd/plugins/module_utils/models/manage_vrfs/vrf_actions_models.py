@@ -16,11 +16,7 @@ Covers:
 - POST /fabrics/{fabricName}/vrfActions/stretch
 """
 
-from __future__ import absolute_import, division, print_function
-
-__metaclass__ = type
-
-from typing import ClassVar, List, Literal, Optional
+from typing import ClassVar, Literal
 
 from ansible_collections.cisco.nd.plugins.module_utils.common.pydantic_compat import (
     Field,
@@ -33,7 +29,6 @@ from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.enums 
     ConfigurationStatus,
     OperationStatus,
     VrfAttachmentSwitchRole,
-    VrfStretchTarget,
 )
 
 
@@ -49,18 +44,18 @@ class MultiStatusBaseModel(NDNestedModel):
     Based on: components/schemas/schemas-multiStatusBase
     """
 
-    identifiers: ClassVar[List[str]] = []
-    vrf_name: Optional[str] = Field(
+    identifiers: ClassVar[list[str]] = []
+    vrf_name: str | None = Field(
         default=None,
         alias="vrfName",
         max_length=94,
         description="Name of the VRF this status entry describes",
     )
-    status: Optional[OperationStatus] = Field(
+    status: OperationStatus | None = Field(
         default=None,
         description="Outcome of the operation for this VRF",
     )
-    message: Optional[str] = Field(
+    message: str | None = Field(
         default=None,
         description="Error message in case of operation failure",
     )
@@ -73,37 +68,37 @@ class VrfOrNetworkPreviewModel(NDNestedModel):
     Based on: components/schemas/vrfOrNetworkPreview
     """
 
-    identifiers: ClassVar[List[str]] = []
-    fabric_name: Optional[str] = Field(
+    identifiers: ClassVar[list[str]] = []
+    fabric_name: str | None = Field(
         default=None,
         alias="fabricName",
         description="Name of the fabric that the switch belongs to",
     )
-    switch_id: Optional[str] = Field(
+    switch_id: str | None = Field(
         default=None,
         alias="switchId",
         description="Serial number of the switch",
     )
-    switch_ip: Optional[str] = Field(
+    switch_ip: str | None = Field(
         default=None,
         alias="switchIp",
         description="IPv4 address of the switch",
     )
-    switch_name: Optional[str] = Field(
+    switch_name: str | None = Field(
         default=None,
         alias="switchName",
         description="Name of the switch",
     )
-    switch_role: Optional[VrfAttachmentSwitchRole] = Field(
+    switch_role: VrfAttachmentSwitchRole | None = Field(
         default=None,
         alias="switchRole",
         description="Role of the switch in the fabric",
     )
-    status: Optional[ConfigurationStatus] = Field(
+    status: ConfigurationStatus | None = Field(
         default=None,
         description="Pending configuration status",
     )
-    pending_configs: Optional[List[str]] = Field(
+    pending_configs: list[str] | None = Field(
         default=None,
         alias="pendingConfigs",
         description=(
@@ -120,37 +115,37 @@ class VrfAttachmentPreviewModel(NDNestedModel):
     (allOf: vrfOrNetworkPreview + vrfName)
     """
 
-    identifiers: ClassVar[List[str]] = []
-    fabric_name: Optional[str] = Field(
+    identifiers: ClassVar[list[str]] = []
+    fabric_name: str | None = Field(
         default=None,
         alias="fabricName",
         description="Name of the fabric that the switch belongs to",
     )
-    switch_id: Optional[str] = Field(
+    switch_id: str | None = Field(
         default=None,
         alias="switchId",
         description="Serial number of the switch",
     )
-    switch_ip: Optional[str] = Field(
+    switch_ip: str | None = Field(
         default=None,
         alias="switchIp",
         description="IPv4 address of the switch",
     )
-    switch_name: Optional[str] = Field(
+    switch_name: str | None = Field(
         default=None,
         alias="switchName",
         description="Name of the switch",
     )
-    switch_role: Optional[VrfAttachmentSwitchRole] = Field(
+    switch_role: VrfAttachmentSwitchRole | None = Field(
         default=None,
         alias="switchRole",
         description="Role of the switch in the fabric",
     )
-    status: Optional[ConfigurationStatus] = Field(
+    status: ConfigurationStatus | None = Field(
         default=None,
         description="Pending configuration status",
     )
-    pending_configs: Optional[List[str]] = Field(
+    pending_configs: list[str] | None = Field(
         default=None,
         alias="pendingConfigs",
         description=(
@@ -158,7 +153,7 @@ class VrfAttachmentPreviewModel(NDNestedModel):
         ),
     )
     vrf_name: str = Field(
-        ...,
+        default=...,
         alias="vrfName",
         max_length=94,
         description="Name of the VRF",
@@ -172,15 +167,15 @@ class VrfStretchItemModel(NDNestedModel):
     Based on: components/schemas/vrfStretchItem
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     vrf_name: str = Field(
-        ...,
+        default=...,
         alias="vrfName",
         max_length=94,
         description="Name of the VRF to stretch",
     )
     stretch: str = Field(
-        ...,
+        default=...,
         description=(
             "Stretch target. Use 'allBgwList' to stretch to all border "
             "gateways, or 'none' to remove stretching."
@@ -196,22 +191,22 @@ class VrfStretchStatusModel(NDNestedModel):
     (allOf: schemas-multiStatusBase + stretch)
     """
 
-    identifiers: ClassVar[List[str]] = []
-    vrf_name: Optional[str] = Field(
+    identifiers: ClassVar[list[str]] = []
+    vrf_name: str | None = Field(
         default=None,
         alias="vrfName",
         max_length=94,
         description="Name of the VRF",
     )
-    status: Optional[OperationStatus] = Field(
+    status: OperationStatus | None = Field(
         default=None,
         description="Outcome of the stretch operation for this VRF",
     )
-    message: Optional[str] = Field(
+    message: str | None = Field(
         default=None,
         description="Error message in case of operation failure",
     )
-    stretch: Optional[str] = Field(
+    stretch: str | None = Field(
         default=None,
         description="Stretch target value applied to this VRF",
     )
@@ -231,18 +226,18 @@ class VrfDeployRequestModel(NDBaseModel):
           POST /fabrics/{fabricName}/vrfActions/preview
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    vrf_names: List[str] = Field(
-        ...,
+    vrf_names: list[str] = Field(
+        default=...,
         alias="vrfNames",
         min_length=1,
         description="Names of VRFs to deploy",
     )
-    switch_fabric_names: Optional[List[str]] = Field(
+    switch_fabric_names: list[str] | None = Field(
         default=None,
         alias="switchFabricNames",
         description=(
@@ -250,7 +245,7 @@ class VrfDeployRequestModel(NDBaseModel):
             "limited. Leave unset to deploy to all fabrics."
         ),
     )
-    switch_ids: Optional[List[str]] = Field(
+    switch_ids: list[str] | None = Field(
         default=None,
         alias="switchIds",
         description=(
@@ -268,12 +263,12 @@ class VrfExportRequestModel(NDBaseModel):
     Path: POST /fabrics/{fabricName}/vrfActions/export
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    vrf_names: Optional[List[str]] = Field(
+    vrf_names: list[str] | None = Field(
         default=None,
         alias="vrfNames",
         description=(
@@ -291,13 +286,13 @@ class VrfRemoveRequestModel(NDBaseModel):
     Schema: ``{ vrfNames: string[] }``
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    vrf_names: List[str] = Field(
-        ...,
+    vrf_names: list[str] = Field(
+        default=...,
         alias="vrfNames",
         min_length=1,
         description="Names of the VRFs to remove",
@@ -312,12 +307,12 @@ class VrfStretchRequestModel(NDBaseModel):
     Path: POST /fabrics/{fabricName}/vrfActions/stretch
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    attachments: Optional[List[VrfStretchItemModel]] = Field(
+    attachments: list[VrfStretchItemModel] | None = Field(
         default=None,
         description="List of VRF name and stretch-target pairs",
     )
@@ -336,12 +331,12 @@ class VrfRemoveResponseModel(NDBaseModel):
     Schema: ``{ results: schemas-multiStatusBase[] }``
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    results: Optional[List[MultiStatusBaseModel]] = Field(
+    results: list[MultiStatusBaseModel] | None = Field(
         default=None,
         description=(
             "Status of each VRF removal. Will contain only the entries "
@@ -358,12 +353,12 @@ class VrfStretch207ResponseModel(NDBaseModel):
     Path: POST /fabrics/{fabricName}/vrfActions/stretch response
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    results: Optional[List[VrfStretchStatusModel]] = Field(
+    results: list[VrfStretchStatusModel] | None = Field(
         default=None,
         description="Status of each VRF stretch request",
     )
@@ -377,12 +372,12 @@ class VrfPreviewResponseModel(NDBaseModel):
     Path: POST /fabrics/{fabricName}/vrfActions/preview response
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    attachments: Optional[List[VrfAttachmentPreviewModel]] = Field(
+    attachments: list[VrfAttachmentPreviewModel] | None = Field(
         default=None,
         description=(
             "List of pending configuration changes per VRF per switch"

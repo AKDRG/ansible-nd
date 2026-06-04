@@ -1,10 +1,10 @@
 # Copyright: (c) 2026, Akshayanat C S (@achengam) <achengam@cisco.com>
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
-from __future__ import absolute_import, division, print_function
 
 import copy
-from typing import Any, Dict, List
+
+from typing import Any
 
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.config_models import (
     VrfParentConfigModel,
@@ -45,16 +45,16 @@ class MultisiteParentVrfStrategy(StandaloneVrfStrategy):
     def config_model_cls(self) -> type:
         return VrfParentConfigModel
 
-    def get_argument_spec(self) -> Dict[str, Any]:
+    def get_argument_spec(self) -> dict[str, Any]:
         """Parent fabrics expose the child_fabric_config parameter."""
         return vrf_parent_argument_spec()
 
     def build_child_task_args(
         self,
         child_fabric_name: str,
-        vrf_configs: List[Dict],
+        vrf_configs: list[dict],
         state: str,
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """
         Build module_args for executing nd_vrf against a Multisite child fabric.
 

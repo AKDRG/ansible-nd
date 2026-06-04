@@ -14,14 +14,11 @@ Endpoints covered:
 - List ACI fabric flow telemetry VRF rules
 """
 
-from __future__ import absolute_import, annotations, division, print_function
 
-# pylint: disable=invalid-name
-__metaclass__ = type
 __author__ = "Akshayanat C S"
-# pylint: enable=invalid-name
 
-from typing import Literal, Optional
+
+from typing import Literal
 
 from ansible_collections.cisco.nd.plugins.module_utils.enums import HttpVerbEnum
 from ansible_collections.cisco.nd.plugins.module_utils.endpoints.mixins import (
@@ -81,7 +78,7 @@ class VrfFlowRulesVrfsEndpointParams(EndpointQueryParams):
     ```
     """
 
-    tenant_name: Optional[str] = Field(default=None, min_length=1, description="ACI tenant name")
+    tenant_name: str | None = Field(default=None, min_length=1, description="ACI tenant name")
 
 
 # ============================================================================

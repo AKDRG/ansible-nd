@@ -1,9 +1,7 @@
 # Copyright: (c) 2026, Akshayanat C S (@achengam) <achengam@cisco.com>
 # GNU General Public License v3.0+ (see LICENSE or https://www.gnu.org/licenses/gpl-3.0.txt)
 
-from __future__ import absolute_import, division, print_function
-
-from typing import Any, Dict, Optional
+from typing import Any
 
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.config_models import (
     VrfChildConfigModel,
@@ -28,13 +26,13 @@ class ChildVrfStrategy(StandaloneVrfStrategy):
     def __init__(
         self,
         fabric_name: str,
-        fabric_data: Optional[Dict[str, Any]] = None,
-        cluster_name: Optional[str] = None,
+        fabric_data: dict[str, Any] | None = None,
+        cluster_name: str | None = None,
         **kwargs,
     ):
         super().__init__(fabric_name=fabric_name, fabric_data=fabric_data, **kwargs)
         # Prefer explicit cluster_name (coordinator fast-path), fall back to fabric_data.
-        self._cluster_name: Optional[str] = cluster_name or (
+        self._cluster_name: str | None = cluster_name or (
             (fabric_data or {}).get("clusterName")
         )
 
@@ -57,7 +55,7 @@ class ChildVrfStrategy(StandaloneVrfStrategy):
         return not self.is_multicluster
 
     @property
-    def cluster_name(self) -> Optional[str]:
+    def cluster_name(self) -> str | None:
         """The cluster name, or None for Multisite child fabrics."""
         return self._cluster_name
 
@@ -69,7 +67,7 @@ class ChildVrfStrategy(StandaloneVrfStrategy):
 
     # ── Argument spec ──────────────────────────────────────────────
 
-    def get_argument_spec(self) -> Dict[str, Any]:
+    def get_argument_spec(self) -> dict[str, Any]:
         """Child fabrics do not expose child_fabric_config."""
         return vrf_base_argument_spec()
 

@@ -16,14 +16,11 @@ Endpoints covered:
 - List VRF attachments (query)
 """
 
-from __future__ import absolute_import, annotations, division, print_function
 
-# pylint: disable=invalid-name
-__metaclass__ = type
 __author__ = "Akshayanat C S"
-# pylint: enable=invalid-name
 
-from typing import Literal, Optional
+
+from typing import Literal
 
 from ansible_collections.cisco.nd.plugins.module_utils.enums import HttpVerbEnum
 from ansible_collections.cisco.nd.plugins.module_utils.endpoints.mixins import (
@@ -118,8 +115,8 @@ class VrfAttachmentsQueryEndpointParams(ClusterNameMixin, FilterMixin, MaxMixin,
     ```
     """
 
-    sort: Optional[str] = Field(default=None, min_length=1, description="Sort field and direction (e.g., 'vrfName:asc')")
-    include_all: Optional[bool] = Field(default=None, description="Include all attachment records")
+    sort: str | None = Field(default=None, min_length=1, description="Sort field and direction (e.g., 'vrfName:asc')")
+    include_all: bool | None = Field(default=None, description="Include all attachment records")
 
 
 # ============================================================================

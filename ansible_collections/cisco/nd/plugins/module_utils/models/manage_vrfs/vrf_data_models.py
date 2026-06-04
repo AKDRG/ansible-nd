@@ -16,11 +16,7 @@ Covers:
 - PUT /fabrics/{fabricName}/vrfs/{vrfName}
 """
 
-from __future__ import absolute_import, division, print_function
-
-__metaclass__ = type
-
-from typing import Any, Dict, List, Optional, ClassVar, Literal
+from typing import Any, ClassVar, Literal
 
 from ansible_collections.cisco.nd.plugins.module_utils.common.pydantic_compat import (
     Field,
@@ -33,7 +29,6 @@ from ansible_collections.cisco.nd.plugins.module_utils.models.nested import (
 
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.enums import (
     ConfigurationStatus,
-    DpuAffinity,
     OperationStatus,
     VrfType,
 )
@@ -54,13 +49,13 @@ class MetadataCounts(NDNestedModel):
     Based on: components/schemas/MetadataCounts
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     total: int = Field(
-        ...,
+        default=...,
         description="The total number of records",
     )
     remaining: int = Field(
-        ...,
+        default=...,
         description="The remaining number of records",
     )
 
@@ -72,12 +67,12 @@ class Metadata(NDNestedModel):
     Based on: components/schemas/Metadata
     """
 
-    identifiers: ClassVar[List[str]] = []
-    counts: Optional[MetadataCounts] = Field(
+    identifiers: ClassVar[list[str]] = []
+    counts: MetadataCounts | None = Field(
         default=None,
         description="Count information including total and remaining",
     )
-    links: Optional[Dict[str, str]] = Field(
+    links: dict[str, str] | None = Field(
         default=None,
         description="Pagination link URLs (next, previous)",
     )
@@ -91,19 +86,19 @@ class TrmData(NDNestedModel):
     trmV4Fields, trmV6Fields, trmFlags)
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     # trmCommonFields
-    mvpn_route_target_import: Optional[List[str]] = Field(
+    mvpn_route_target_import: list[str] | None = Field(
         default=None,
         alias="mvpnRouteTargetImport",
         description="List of MVPN routes imports, NX-OS specific",
     )
-    mvpn_route_target_export: Optional[List[str]] = Field(
+    mvpn_route_target_export: list[str] | None = Field(
         default=None,
         alias="mvpnRouteTargetExport",
         description="List of MVPN routes exports, NX-OS specific",
     )
-    mvpn_inter_as: Optional[bool] = Field(
+    mvpn_inter_as: bool | None = Field(
         default=False,
         alias="mvpnInterAs",
         description=(
@@ -111,17 +106,17 @@ class TrmData(NDNestedModel):
             "to cross BGP AS boundaries. IOS XE specific"
         ),
     )
-    l3_vni_multicast_group: Optional[str] = Field(
+    l3_vni_multicast_group: str | None = Field(
         default=None,
         alias="l3VniMulticastGroup",
         description="Underlay multicast address",
     )
-    trm_on_bgw: Optional[bool] = Field(
+    trm_on_bgw: bool | None = Field(
         default=False,
         alias="trmOnBgw",
         description="Enable TRM on border gateway multisite",
     )
-    loopback_number: Optional[int] = Field(
+    loopback_number: int | None = Field(
         default=None,
         alias="loopbackNumber",
         ge=0,
@@ -129,60 +124,60 @@ class TrmData(NDNestedModel):
         description="Identifier for the loopback interface",
     )
     # trmV4Fields
-    v4_rp_absent: Optional[bool] = Field(
+    v4_rp_absent: bool | None = Field(
         default=False,
         alias="v4RpAbsent",
         description=(
             "There is no RP in TRMv4 as only SSM is used"
         ),
     )
-    v4_rp_external: Optional[bool] = Field(
+    v4_rp_external: bool | None = Field(
         default=False,
         alias="v4RpExternal",
         description="Is TRMv4 RP external to the fabric?",
     )
-    v4_rp_address: Optional[str] = Field(
+    v4_rp_address: str | None = Field(
         default=None,
         alias="v4RpAddress",
         description="IPv4 address for the RP",
     )
-    v4_multicast_group: Optional[str] = Field(
+    v4_multicast_group: str | None = Field(
         default=None,
         alias="v4MulticastGroup",
         description="Multicast group for TRMv4",
     )
     # trmV6Fields
-    v6_rp_absent: Optional[bool] = Field(
+    v6_rp_absent: bool | None = Field(
         default=False,
         alias="v6RpAbsent",
         description=(
             "There is no RP in TRMv6 as only SSM is used. NX-OS specific"
         ),
     )
-    v6_rp_external: Optional[bool] = Field(
+    v6_rp_external: bool | None = Field(
         default=False,
         alias="v6RpExternal",
         description=(
             "Is RP external to the fabric in TRMv6? NX-OS specific"
         ),
     )
-    v6_rp_address: Optional[str] = Field(
+    v6_rp_address: str | None = Field(
         default=None,
         alias="v6RpAddress",
         description="IPv6 address. NX-OS specific",
     )
-    v6_multicast_group: Optional[str] = Field(
+    v6_multicast_group: str | None = Field(
         default=None,
         alias="v6MulticastGroup",
         description="Multicast group for TRMv6. NX-OS specific",
     )
     # trmFlags
-    ipv4_trm: Optional[bool] = Field(
+    ipv4_trm: bool | None = Field(
         default=None,
         alias="ipv4Trm",
         description="Enable IPv4 tenant routed multicast",
     )
-    ipv6_trm: Optional[bool] = Field(
+    ipv6_trm: bool | None = Field(
         default=None,
         alias="ipv6Trm",
         description="Enable IPv6 tenant routed multicast",
@@ -190,22 +185,22 @@ class TrmData(NDNestedModel):
 
     @field_validator("v4_rp_address", mode="before")
     @classmethod
-    def validate_v4_rp_address(cls, v: Optional[str]) -> Optional[str]:
+    def validate_v4_rp_address(cls, v: str | None) -> str | None:
         return VrfValidators.validate_ipv4_address(v)
 
     @field_validator("l3_vni_multicast_group", "v4_multicast_group", mode="before")
     @classmethod
-    def validate_ipv4_fields(cls, v: Optional[str]) -> Optional[str]:
+    def validate_ipv4_fields(cls, v: str | None) -> str | None:
         return VrfValidators.validate_ipv4_address(v)
 
     @field_validator("v6_rp_address", mode="before")
     @classmethod
-    def validate_v6_rp_address(cls, v: Optional[str]) -> Optional[str]:
+    def validate_v6_rp_address(cls, v: str | None) -> str | None:
         return VrfValidators.validate_ipv6_address(v)
 
     @field_validator("v6_multicast_group", mode="before")
     @classmethod
-    def validate_v6_multicast(cls, v: Optional[str]) -> Optional[str]:
+    def validate_v6_multicast(cls, v: str | None) -> str | None:
         return VrfValidators.validate_cidrv6(v)
 
 
@@ -216,37 +211,37 @@ class VxlanCoreData(NDNestedModel):
     Based on: components/schemas/vxlanCoreData
     """
 
-    identifiers: ClassVar[List[str]] = []
-    vrf_vlan_name: Optional[str] = Field(
+    identifiers: ClassVar[list[str]] = []
+    vrf_vlan_name: str | None = Field(
         default=None,
         alias="vrfVlanName",
         description="Name associated with the VLAN for the VRF",
     )
-    vrf_interface_description: Optional[str] = Field(
+    vrf_interface_description: str | None = Field(
         default=None,
         alias="vrfInterfaceDescription",
         description="Description of the interface associated with the VRF",
     )
-    vrf_description: Optional[str] = Field(
+    vrf_description: str | None = Field(
         default=None,
         alias="vrfDescription",
         max_length=255,
         description="Description of the VRF",
     )
-    mtu: Optional[int] = Field(
+    mtu: int | None = Field(
         default=9216,
         ge=68,
         le=9216,
         description="MTU associated with the interface",
     )
-    routing_tag: Optional[int] = Field(
+    routing_tag: int | None = Field(
         default=12345,
         alias="routingTag",
         ge=0,
         le=4294967295,
         description="NX-OS specific",
     )
-    vrf_route_map: Optional[str] = Field(
+    vrf_route_map: str | None = Field(
         default="FABRIC-RMAP-REDIST-SUBNET",
         alias="vrfRouteMap",
         description=(
@@ -254,28 +249,28 @@ class VxlanCoreData(NDNestedModel):
             "route redistribution"
         ),
     )
-    v6_vrf_route_map: Optional[str] = Field(
+    v6_vrf_route_map: str | None = Field(
         default="FABRIC-RMAP-REDIST-SUBNET",
         alias="v6VrfRouteMap",
         description=(
             "If not set, redistribute direct route map will be used"
         ),
     )
-    max_bgp_paths: Optional[int] = Field(
+    max_bgp_paths: int | None = Field(
         default=1,
         alias="maxBgpPaths",
         ge=1,
         le=64,
         description="1-64 for NX-OS, 1-32 for IOS XE",
     )
-    max_ibgp_paths: Optional[int] = Field(
+    max_ibgp_paths: int | None = Field(
         default=2,
         alias="maxIbgpPaths",
         ge=1,
         le=64,
         description="1-64 for NX-OS, 1-32 for IOS XE",
     )
-    ipv6_link_local: Optional[bool] = Field(
+    ipv6_link_local: bool | None = Field(
         default=True,
         alias="ipv6LinkLocal",
         description=(
@@ -283,7 +278,7 @@ class VxlanCoreData(NDNestedModel):
             "Not applicable to L3VNI without VLAN config. NX-OS specific"
         ),
     )
-    disable_rt_auto: Optional[bool] = Field(
+    disable_rt_auto: bool | None = Field(
         default=False,
         alias="disableRtAuto",
         description=(
@@ -291,22 +286,22 @@ class VxlanCoreData(NDNestedModel):
             "assigns route targets to VPNs"
         ),
     )
-    route_target_import: Optional[List[str]] = Field(
+    route_target_import: list[str] | None = Field(
         default=None,
         alias="routeTargetImport",
         description="List of VPN import route targets",
     )
-    route_target_export: Optional[List[str]] = Field(
+    route_target_export: list[str] | None = Field(
         default=None,
         alias="routeTargetExport",
         description="List of VPN export route targets",
     )
-    evpn_route_target_import: Optional[List[str]] = Field(
+    evpn_route_target_import: list[str] | None = Field(
         default=None,
         alias="evpnRouteTargetImport",
         description="List of EVPN import route targets",
     )
-    evpn_route_target_export: Optional[List[str]] = Field(
+    evpn_route_target_export: list[str] | None = Field(
         default=None,
         alias="evpnRouteTargetExport",
         description="List of EVPN export route targets",
@@ -321,8 +316,8 @@ class VxlanFabricInstance(NDNestedModel):
     These fields are not applicable to fabric groups.
     """
 
-    identifiers: ClassVar[List[str]] = []
-    l3_vni_without_vlan: Optional[bool] = Field(
+    identifiers: ClassVar[list[str]] = []
+    l3_vni_without_vlan: bool | None = Field(
         default=False,
         alias="l3VniWithoutVlan",
         description=(
@@ -330,7 +325,7 @@ class VxlanFabricInstance(NDNestedModel):
             "NX-OS specific"
         ),
     )
-    bgp_best_path_relax: Optional[bool] = Field(
+    bgp_best_path_relax: bool | None = Field(
         default=False,
         alias="bgpBestPathRelax",
         description=(
@@ -338,12 +333,12 @@ class VxlanFabricInstance(NDNestedModel):
             "NX-OS specific"
         ),
     )
-    bgp_log_neighbor_change: Optional[bool] = Field(
+    bgp_log_neighbor_change: bool | None = Field(
         default=False,
         alias="bgpLogNeighborChange",
         description="Log messages for BGP neighbor up/down event",
     )
-    bgp_allow_as_in: Optional[bool] = Field(
+    bgp_allow_as_in: bool | None = Field(
         default=False,
         alias="bgpAllowAsIn",
         description=(
@@ -351,7 +346,7 @@ class VxlanFabricInstance(NDNestedModel):
             "border switch. VRF Lite specific."
         ),
     )
-    bgp_allow_as_in_num: Optional[int] = Field(
+    bgp_allow_as_in_num: int | None = Field(
         default=3,
         alias="bgpAllowAsInNum",
         ge=1,
@@ -361,7 +356,7 @@ class VxlanFabricInstance(NDNestedModel):
             "VRF Lite specific."
         ),
     )
-    bgp_as_override: Optional[bool] = Field(
+    bgp_as_override: bool | None = Field(
         default=False,
         alias="bgpAsOverride",
         description=(
@@ -369,7 +364,7 @@ class VxlanFabricInstance(NDNestedModel):
             "VRF Lite specific."
         ),
     )
-    bgp_disable_peer_as_check: Optional[bool] = Field(
+    bgp_disable_peer_as_check: bool | None = Field(
         default=False,
         alias="bgpDisablePeerAsCheck",
         description=(
@@ -377,14 +372,14 @@ class VxlanFabricInstance(NDNestedModel):
             "BGP peer. NX-OS specific. VRF Lite specific."
         ),
     )
-    bgp_soft_reconfig_always: Optional[bool] = Field(
+    bgp_soft_reconfig_always: bool | None = Field(
         default=False,
         alias="bgpSoftReconfigAlways",
         description=(
             "Allow inbound soft reconfiguration always. VRF Lite specific."
         ),
     )
-    advertise_host_route: Optional[bool] = Field(
+    advertise_host_route: bool | None = Field(
         default=False,
         alias="advertiseHostRoute",
         description=(
@@ -392,26 +387,26 @@ class VxlanFabricInstance(NDNestedModel):
             "to edge routers"
         ),
     )
-    advertise_default_route: Optional[bool] = Field(
+    advertise_default_route: bool | None = Field(
         default=True,
         alias="advertiseDefaultRoute",
         description=(
             "Flag to control advertisement of default route internally"
         ),
     )
-    configure_static_default_route: Optional[bool] = Field(
+    configure_static_default_route: bool | None = Field(
         default=True,
         alias="configureStaticDefaultRoute",
         description="Flag to control static default route configuration",
     )
-    bgp_password: Optional[str] = Field(
+    bgp_password: str | None = Field(
         default=None,
         alias="bgpPassword",
         min_length=4,
         max_length=32,
         description="VRF Lite BGP neighbor password",
     )
-    bgp_password_key_type: Optional[int] = Field(
+    bgp_password_key_type: int | None = Field(
         default=3,
         alias="bgpPasswordKeyType",
         description=(
@@ -419,25 +414,25 @@ class VxlanFabricInstance(NDNestedModel):
             "Required if BGP authentication is enabled"
         ),
     )
-    netflow: Optional[bool] = Field(
+    netflow: bool | None = Field(
         default=False,
         description=(
             "For netflow on VRF-LITE sub-interface. "
             "Supported only if netflow is enabled on fabric"
         ),
     )
-    netflow_monitor: Optional[str] = Field(
+    netflow_monitor: str | None = Field(
         default=None,
         alias="netflowMonitor",
         description=(
             "For NX-OS only. Required when netflow is enabled"
         ),
     )
-    stretch: Optional[str] = Field(
+    stretch: str | None = Field(
         default=None,
         description="Border gateway list name",
     )
-    trm_data: Optional[TrmData] = Field(
+    trm_data: TrmData | None = Field(
         default=None,
         alias="trmData",
         description="TRM configuration data",
@@ -446,8 +441,8 @@ class VxlanFabricInstance(NDNestedModel):
     @field_validator("bgp_password_key_type", mode="before")
     @classmethod
     def validate_bgp_key_type(
-        cls, v: Optional[int]
-    ) -> Optional[int]:
+        cls, v: int | None
+    ) -> int | None:
         if v is not None and v not in (3, 7):
             raise ValueError(
                 f"bgpPasswordKeyType must be 3 or 7, got: {v}"
@@ -462,10 +457,10 @@ class SecurityGroupData(NDNestedModel):
     Based on: components/schemas/securityGroupData
     """
 
-    identifiers: ClassVar[List[str]] = []
-    default_security_action: Optional[
-        Literal["unenforcedOrNone", "enforcedPermit", "enforcedDeny"]
-    ] = Field(
+    identifiers: ClassVar[list[str]] = []
+    default_security_action: Literal[
+        "unenforcedOrNone", "enforcedPermit", "enforcedDeny"
+    ] | None = Field(
         default=None,
         alias="defaultSecurityAction",
         description=(
@@ -474,7 +469,7 @@ class SecurityGroupData(NDNestedModel):
             "vxlan type fabrics."
         ),
     )
-    default_security_group_tag: Optional[int] = Field(
+    default_security_group_tag: int | None = Field(
         default=None,
         alias="defaultSecurityGroupTag",
         ge=16,
@@ -493,13 +488,13 @@ class L4l7ServiceData(NDNestedModel):
     Based on: components/schemas/l4l7ServiceData
     """
 
-    identifiers: ClassVar[List[str]] = []
-    service_config: Optional[Dict[str, str]] = Field(
+    identifiers: ClassVar[list[str]] = []
+    service_config: dict[str, str] | None = Field(
         default=None,
         alias="serviceConfig",
         description="Service configuration in JSON format",
     )
-    service_epbr_config: Optional[Dict[str, str]] = Field(
+    service_epbr_config: dict[str, str] | None = Field(
         default=None,
         alias="serviceEpbrConfig",
         description="ePBR service configuration in JSON format",
@@ -530,19 +525,19 @@ class VrfDataModel(NDBaseModel):
     variant; for other types they are accepted as free-form dicts.
     """
 
-    identifiers: ClassVar[List[str]] = ["vrf_name", "fabric_name"]
+    identifiers: ClassVar[list[str]] = ["vrf_name", "fabric_name"]
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "composite"
 
     # vrfCommon required fields
     fabric_name: str = Field(
-        ...,
+        default=...,
         alias="fabricName",
         description="Name of the fabric",
     )
     vrf_name: str = Field(
-        ...,
+        default=...,
         alias="vrfName",
         max_length=94,
         description=(
@@ -551,52 +546,52 @@ class VrfDataModel(NDBaseModel):
         ),
     )
     # vrfCommon optional fields
-    vrf_status: Optional[ConfigurationStatus] = Field(
+    vrf_status: ConfigurationStatus | None = Field(
         default=None,
         alias="vrfStatus",
         description="Configuration deployment status (read-only)",
     )
-    tenant_name: Optional[str] = Field(
+    tenant_name: str | None = Field(
         default=None,
         alias="tenantName",
         description="Name of the tenant (multi-tenant)",
     )
     # vxlanVrfBase fields
-    vrf_id: Optional[int] = Field(
+    vrf_id: int | None = Field(
         default=None,
         alias="vrfId",
         ge=1,
         le=16777214,
         description="ID of the VRF",
     )
-    vlan_id: Optional[int] = Field(
+    vlan_id: int | None = Field(
         default=None,
         alias="vlanId",
         ge=2,
         le=4094,
         description="VLAN identifier. Must be between 2 and 4094.",
     )
-    vrf_type: Optional[str] = Field(
+    vrf_type: str | None = Field(
         default=VrfType.VXLAN_IBGP.value,
         alias="vrfType",
         description="Type of VRF (discriminator for vrfSchema)",
     )
-    service_vrf_template_name: Optional[str] = Field(
+    service_vrf_template_name: str | None = Field(
         default=None,
         alias="serviceVrfTemplateName",
         description="Service VRF template name for userDefined VRFs",
     )
-    vrf_template_name: Optional[str] = Field(
+    vrf_template_name: str | None = Field(
         default=None,
         alias="vrfTemplateName",
         description="VRF template name for userDefined VRFs",
     )
-    vrf_extension_template_name: Optional[str] = Field(
+    vrf_extension_template_name: str | None = Field(
         default=None,
         alias="vrfExtensionTemplateName",
         description="VRF extension template name for userDefined VRFs",
     )
-    vrf_template_config: Optional[Dict[str, str]] = Field(
+    vrf_template_config: dict[str, str] | None = Field(
         default=None,
         alias="vrfTemplateConfig",
         description=(
@@ -604,7 +599,7 @@ class VrfDataModel(NDBaseModel):
             "a JSON object with string values"
         ),
     )
-    core_data: Optional[Any] = Field(
+    core_data: Any | None = Field(
         default=None,
         alias="coreData",
         description=(
@@ -612,7 +607,7 @@ class VrfDataModel(NDBaseModel):
             "for other types this is a free-form object."
         ),
     )
-    fabric_data: Optional[Any] = Field(
+    fabric_data: Any | None = Field(
         default=None,
         alias="fabricData",
         description=(
@@ -620,15 +615,15 @@ class VrfDataModel(NDBaseModel):
             "``VxlanFabricInstance``; for other types a free-form object."
         ),
     )
-    service_data: Optional[L4l7ServiceData] = Field(
+    service_data: L4l7ServiceData | None = Field(
         default=None,
         alias="serviceData",
         description="L4L7 service configuration",
     )
     # securityGroupData fields
-    default_security_action: Optional[
-        Literal["unenforcedOrNone", "enforcedPermit", "enforcedDeny"]
-    ] = Field(
+    default_security_action: Literal[
+        "unenforcedOrNone", "enforcedPermit", "enforcedDeny"
+    ] | None = Field(
         default=None,
         alias="defaultSecurityAction",
         description=(
@@ -637,7 +632,7 @@ class VrfDataModel(NDBaseModel):
             "vxlan type fabrics."
         ),
     )
-    default_security_group_tag: Optional[int] = Field(
+    default_security_group_tag: int | None = Field(
         default=None,
         alias="defaultSecurityGroupTag",
         ge=16,
@@ -655,7 +650,7 @@ class VrfDataModel(NDBaseModel):
 
     @field_validator("vrf_type", mode="before")
     @classmethod
-    def validate_vrf_type(cls, v: Optional[str]) -> Optional[str]:
+    def validate_vrf_type(cls, v: str | None) -> str | None:
         if v is None:
             return None
         v = str(v).strip()
@@ -668,8 +663,8 @@ class VrfDataModel(NDBaseModel):
     @field_validator("vrf_template_config", mode="before")
     @classmethod
     def validate_vrf_template_config(
-        cls, v: Optional[Dict[str, str]]
-    ) -> Optional[Dict[str, str]]:
+        cls, v: dict[str, str] | None
+    ) -> dict[str, str] | None:
         if v is None:
             return None
         if not isinstance(v, dict):
@@ -691,13 +686,13 @@ class VrfCreateRequestModel(NDBaseModel):
     Schema: ``{ vrfs: vrfSchema[] }``
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    vrfs: List[VrfDataModel] = Field(
-        ...,
+    vrfs: list[VrfDataModel] = Field(
+        default=...,
         min_length=1,
         description="List of VRFs to be created",
     )
@@ -711,21 +706,21 @@ class VrfCreate207StatusModel(NDNestedModel):
     (allOf: schemas-multiStatusBase + vrfId)
     """
 
-    identifiers: ClassVar[List[str]] = []
-    vrf_name: Optional[str] = Field(
+    identifiers: ClassVar[list[str]] = []
+    vrf_name: str | None = Field(
         default=None,
         alias="vrfName",
         description="Name of the VRF",
     )
-    status: Optional[OperationStatus] = Field(
+    status: OperationStatus | None = Field(
         default=None,
         description="Status of the VRF creation",
     )
-    message: Optional[str] = Field(
+    message: str | None = Field(
         default=None,
         description="Error message in case of VRF operation failure",
     )
-    vrf_id: Optional[int] = Field(
+    vrf_id: int | None = Field(
         default=None,
         alias="vrfId",
         description="The unique ID of the created VRF",
@@ -740,12 +735,12 @@ class VrfCreateResponseModel(NDBaseModel):
     Schema: ``{ results: vrfCreate207Status[] }``
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    results: Optional[List[VrfCreate207StatusModel]] = Field(
+    results: list[VrfCreate207StatusModel] | None = Field(
         default=None,
         description="List of statuses for each VRF creation request",
     )
@@ -759,16 +754,16 @@ class VrfListResponseModel(NDBaseModel):
     Schema: ``{ vrfs: vrfSchema[], meta: Metadata }``
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    vrfs: Optional[List[VrfDataModel]] = Field(
+    vrfs: list[VrfDataModel] | None = Field(
         default=None,
         description="List of all VRFs under the given fabric",
     )
-    meta: Optional[Metadata] = Field(
+    meta: Metadata | None = Field(
         default=None,
         description="Pagination and result-count metadata",
     )
@@ -782,27 +777,27 @@ class VrfPreInformationResponseModel(NDBaseModel):
     Path: GET /fabrics/{fabricName}/vrfPreInformation
     """
 
-    identifiers: ClassVar[List[str]] = []
+    identifiers: ClassVar[list[str]] = []
     identifier_strategy: ClassVar[
-        Optional[Literal["single", "composite", "hierarchical", "singleton"]]
+        Literal["single", "composite", "hierarchical", "singleton"] | None
     ] = "singleton"
 
-    l3_vni: Optional[int] = Field(
+    l3_vni: int | None = Field(
         default=None,
         alias="l3Vni",
         description="Layer 3 VNI (Virtual Network Identifier)",
     )
-    vrf_name_prefix: Optional[str] = Field(
+    vrf_name_prefix: str | None = Field(
         default=None,
         alias="vrfNamePrefix",
         description="Prefix for the VRF name",
     )
-    vlan_id: Optional[int] = Field(
+    vlan_id: int | None = Field(
         default=None,
         alias="vlanId",
         description="VLAN ID for the VRF",
     )
-    default_security_group_tag: Optional[int] = Field(
+    default_security_group_tag: int | None = Field(
         default=None,
         alias="defaultSecurityGroupTag",
         description=(
