@@ -247,6 +247,7 @@ class VrfWorkflowCoordinator:
 
         # Collect member fabric names for relationship validation
         child_member_names = self.strategy.child_fabric_members()
+        child_member_name_set = set(child_member_names)
         child_fabric_data_map: dict[str, dict] = {
             m.get("fabricName"): m
             for m in self.strategy.fabric_data.get("members", [])
@@ -263,7 +264,7 @@ class VrfWorkflowCoordinator:
             if state != "deleted":
                 for child_cfg in child_configs:
                     child_fabric_name = child_cfg.get("fabric")
-                    if child_fabric_name not in child_member_names:
+                    if child_fabric_name not in child_member_name_set:
                         self.module.fail_json(
                             msg=(
                                 f"Fabric '{child_fabric_name}' is not a member of "
@@ -470,6 +471,12 @@ class VrfWorkflowCoordinator:
             desired=desired_attachments,
             current_vrf_names=desired_vrf_names,
         )
+        current_attachments = pre_attach.get("current")
+        if current_attachments is not None:
+            current_attachments = self._attachment_map_after_detach(
+                current_attachments,
+                pre_attach.get("payloads", []),
+            )
         result = self._run_state_machine(module_args, strategy=active_strategy)
 
         pre_traces = list(pre_delete_traces)
@@ -487,6 +494,7 @@ class VrfWorkflowCoordinator:
             phase="post",
             desired=desired_attachments,
             current_vrf_names=desired_vrf_names,
+            current=current_attachments,
         )
         self._merge_api_trace(result, post_attach)
 
@@ -712,6 +720,7 @@ class VrfWorkflowCoordinator:
         phase: str,
         desired: dict[tuple[str, str], dict[str, Any]] | None = None,
         current_vrf_names: list[str] | None = None,
+        current: dict[tuple[str, str], dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Attach or detach VRFs according to state and phase."""
         state = module_args.get("state", "merged")
@@ -736,11 +745,12 @@ class VrfWorkflowCoordinator:
         query_vrf_names = current_vrf_names
         if query_vrf_names is None:
             query_vrf_names = None if query_all else vrf_names
-        current = self._current_attachment_map(
-            module_args,
-            strategy,
-            query_vrf_names,
-        )
+        if current is None:
+            current = self._current_attachment_map(
+                module_args,
+                strategy,
+                query_vrf_names,
+            )
 
         payloads: list[dict[str, Any]] = []
         deploy_targets: dict[str, set[str]] = {}
@@ -751,7 +761,7 @@ class VrfWorkflowCoordinator:
             payloads = self._planned_attach_payloads(current, desired)
 
         if not payloads:
-            return {}
+            return {"current": current} if phase == "pre" else {}
 
         for payload in payloads:
             vrf_name = payload.get("vrfName")
@@ -762,13 +772,39 @@ class VrfWorkflowCoordinator:
                     payload.get("switchId"),
                 )
 
-        return self._post_vrf_attachments(
+        trace = self._post_vrf_attachments(
             module_args,
             strategy,
             payloads,
             deploy_targets,
             OperationType.DELETE if phase == "pre" else OperationType.CREATE,
         )
+        trace["current"] = current
+        trace["payloads"] = payloads
+        return trace
+
+    def _attachment_map_after_detach(
+        self,
+        current: dict[tuple[str, str], dict[str, Any]],
+        payloads: list[dict[str, Any]],
+    ) -> dict[tuple[str, str], dict[str, Any]]:
+        """
+        Return the cached attachment map after applying detach payloads.
+
+        Replaced/overridden flows run a pre-detach phase followed by a
+        post-attach phase.  The post phase does not need another ND query when
+        the only intervening attachment operation was the detach payload we
+        just sent.
+        """
+        if not payloads:
+            return current
+
+        remaining = dict(current)
+        for payload in payloads:
+            if payload.get("attach") is False:
+                key = (payload.get("vrfName"), payload.get("switchId"))
+                remaining.pop(key, None)
+        return remaining
 
     def _apply_deleted_attachment_phase(
         self,
