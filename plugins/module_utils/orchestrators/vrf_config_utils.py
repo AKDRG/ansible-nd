@@ -8,6 +8,13 @@ components.
 
 from __future__ import annotations
 
+from ansible_collections.cisco.nd.plugins.module_utils.config_actions_resolver import ConfigDeployPlan
+
+
+def _vrf_deploy_type(deploy_type: str) -> str:
+    """Map generic deploy scope to the VRF deploy payload scope."""
+    return "vrf" if deploy_type == "resource" else deploy_type
+
 
 def configured_vrf_names(config: list[dict]) -> list[str]:
     """Return configured VRF names in stable order."""
@@ -21,23 +28,23 @@ def configured_vrf_names(config: list[dict]) -> list[str]:
     return names
 
 
-def deploy_enabled_by_vrf(config: list[dict]) -> dict[str, bool]:
+def deploy_enabled_by_vrf(config: list[dict], plan: ConfigDeployPlan | None = None) -> dict[str, bool]:
     """Return per-VRF deploy intent; omitted deploy defaults to True."""
     deploy_enabled: dict[str, bool] = {}
     for vrf in config:
         name = vrf.get("vrf_name") or vrf.get("vrfName")
         if name:
-            deploy_enabled[name] = vrf.get("deploy", True)
+            deploy_enabled[name] = plan.item_deploy_enabled(vrf) if plan else vrf.get("deploy", True)
     return deploy_enabled
 
 
-def deploy_type_by_vrf(config: list[dict]) -> dict[str, str]:
+def deploy_type_by_vrf(config: list[dict], plan: ConfigDeployPlan | None = None) -> dict[str, str]:
     """Return per-VRF deploy scope; omitted deploy_type defaults to switch."""
     deploy_type: dict[str, str] = {}
     for vrf in config:
         name = vrf.get("vrf_name") or vrf.get("vrfName")
         if name:
-            deploy_type[name] = vrf.get("deploy_type") or vrf.get("deployType") or "switch"
+            deploy_type[name] = _vrf_deploy_type(plan.deploy_type) if plan else vrf.get("deploy_type") or vrf.get("deployType") or "switch"
     return deploy_type
 
 

@@ -64,7 +64,7 @@ def _select_options(options: dict[str, Any], include: Iterable[str] | None) -> d
     return {key: value for key, value in options.items() if key in include_set}
 
 
-def config_actions_spec(include: Iterable[str] | None = None) -> dict[str, Any]:
+def config_actions_spec(include: Iterable[str] | None = None, type_choices: Iterable[str] | None = None) -> dict[str, Any]:
     """
     # Summary
 
@@ -73,9 +73,8 @@ def config_actions_spec(include: Iterable[str] | None = None) -> dict[str, Any]:
     The full option set is `save`, `deploy`, and `type`. Modules that expose only a subset pass the option names they support, e.g.
     `config_actions_spec(include=("deploy",))` for the `nd_interface_*` modules.
 
-    `type` accepts `resource`, `switch`, and `global`, per the contract in issue #368. The companion per-resource `deploy` key described in that
-    issue is not part of this fragment yet: it lives in each module's `config` suboptions and its interaction with `config_actions` (mutually
-    exclusive, or gated on `type == "resource"`) is still under discussion on #368. It will be added as a separate fragment once settled.
+    `type` accepts `resource`, `switch`, and `global` by default, per the contract in issue #368. Modules with a narrower deploy surface pass
+    `type_choices` to expose only the scopes they can execute.
 
     ## Raises
 
@@ -83,10 +82,11 @@ def config_actions_spec(include: Iterable[str] | None = None) -> dict[str, Any]:
 
     - If `include` names an option that is not part of the fragment
     """
+    type_choice_list = list(type_choices or ("resource", "switch", "global"))
     options: dict[str, Any] = {
         "save": {"type": "bool", "default": True},
         "deploy": {"type": "bool", "default": True},
-        "type": {"type": "str", "default": "switch", "choices": ["resource", "switch", "global"]},
+        "type": {"type": "str", "default": "switch", "choices": type_choice_list},
     }
     return {"config_actions": {"type": "dict", "options": _select_options(options, include)}}
 

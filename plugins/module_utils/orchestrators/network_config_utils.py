@@ -8,6 +8,13 @@ components.
 
 from __future__ import annotations
 
+from ansible_collections.cisco.nd.plugins.module_utils.config_actions_resolver import ConfigDeployPlan
+
+
+def _network_deploy_type(deploy_type: str) -> str:
+    """Map generic deploy scope to the Network deploy payload scope."""
+    return "network" if deploy_type == "resource" else deploy_type
+
 
 def configured_network_names(config: list[dict]) -> list[str]:
     """Return configured Network names in stable order."""
@@ -21,23 +28,23 @@ def configured_network_names(config: list[dict]) -> list[str]:
     return names
 
 
-def deploy_enabled_by_network(config: list[dict]) -> dict[str, bool]:
+def deploy_enabled_by_network(config: list[dict], plan: ConfigDeployPlan | None = None) -> dict[str, bool]:
     """Return per-Network deploy intent; omitted deploy defaults to True."""
     deploy_enabled: dict[str, bool] = {}
     for network in config:
         name = network.get("network_name") or network.get("networkName")
         if name:
-            deploy_enabled[name] = network.get("deploy", True)
+            deploy_enabled[name] = plan.item_deploy_enabled(network) if plan else network.get("deploy", True)
     return deploy_enabled
 
 
-def deploy_type_by_network(config: list[dict]) -> dict[str, str]:
+def deploy_type_by_network(config: list[dict], plan: ConfigDeployPlan | None = None) -> dict[str, str]:
     """Return per-Network deploy scope; omitted deploy_type defaults to switch."""
     deploy_type: dict[str, str] = {}
     for network in config:
         name = network.get("network_name") or network.get("networkName")
         if name:
-            deploy_type[name] = network.get("deploy_type") or network.get("deployType") or "switch"
+            deploy_type[name] = _network_deploy_type(plan.deploy_type) if plan else network.get("deploy_type") or network.get("deployType") or "switch"
     return deploy_type
 
 

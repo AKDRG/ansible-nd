@@ -25,6 +25,11 @@ from typing import Any
 
 from ansible.module_utils.basic import AnsibleModule
 
+from ansible_collections.cisco.nd.plugins.module_utils.config_actions_resolver import (
+    ConfigDeployCapability,
+    ConfigDeployPlan,
+    resolve_config_deploy_plan,
+)
 from ansible_collections.cisco.nd.plugins.module_utils.enums import OperationType
 from ansible_collections.cisco.nd.plugins.module_utils.nd_state_machine import NDStateMachine
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_vrfs.config_models import VrfConfigModel
@@ -76,6 +81,7 @@ class VrfWorkflowCoordinator:
     ):
         self.module = module
         self.strategy = strategy
+        self.config_deploy_plan: ConfigDeployPlan | None = None
         self._trace_started_at = time.monotonic()
         self._workflow_trace: list[dict[str, Any]] = []
         if initial_workflow_trace:
@@ -111,6 +117,7 @@ class VrfWorkflowCoordinator:
         module_args: dict = dict(self.module.params)
         try:
             self._normalize_module_args(module_args)
+            self._resolve_config_deploy_plan(module_args)
             if self.strategy is None:
                 self.strategy = self._resolve_strategy(module_args)
             self._trace(
@@ -205,6 +212,28 @@ class VrfWorkflowCoordinator:
         """Normalize legacy module-level aliases before workflow routing."""
         if module_args.get("state") == "query":
             module_args["state"] = "gathered"
+
+    def _resolve_config_deploy_plan(self, module_args: dict) -> ConfigDeployPlan:
+        """Resolve generic config_actions into VRF deploy intent."""
+        capability = ConfigDeployCapability(
+            deploy_types=("switch", "resource"),
+            default_type="switch",
+            default_deploy=True,
+            config_key="config",
+        )
+        try:
+            plan = resolve_config_deploy_plan(
+                capability=capability,
+                module=self.module,
+                params=module_args,
+                state=module_args.get("state"),
+            )
+        except ValueError as exc:
+            self.module.fail_json(msg=f"Invalid config_actions: {exc}")
+            raise
+        self.config_deploy_plan = plan
+        self._trace("config_actions_resolved", config_actions=plan.to_dict())
+        return plan
 
     def _validate_topology_argument_scope(
         self,
@@ -883,11 +912,11 @@ class VrfWorkflowCoordinator:
 
     def _deploy_enabled_by_vrf(self, config: list[dict]) -> dict[str, bool]:
         """Return per-VRF deploy intent; omitted deploy defaults to True."""
-        return deploy_enabled_by_vrf(config)
+        return deploy_enabled_by_vrf(config, self.config_deploy_plan)
 
     def _deploy_type_by_vrf(self, config: list[dict]) -> dict[str, str]:
         """Return per-VRF deploy scope; omitted deploy_type defaults to switch."""
-        return deploy_type_by_vrf(config)
+        return deploy_type_by_vrf(config, self.config_deploy_plan)
 
     def _desired_attachment_map(
         self,

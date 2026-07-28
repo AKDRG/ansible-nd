@@ -137,6 +137,24 @@ def test_nd_argument_specs_00102() -> None:
     """
     # Summary
 
+    Verify `config_actions_spec()` accepts module-specific deploy type choices.
+
+    ## Raises
+
+    None
+    """
+    spec = config_actions_spec(include=("deploy", "type"), type_choices=("switch", "resource"))
+    assert spec["config_actions"]["options"]["type"] == {
+        "type": "str",
+        "default": "switch",
+        "choices": ["switch", "resource"],
+    }
+
+
+def test_nd_argument_specs_00103() -> None:
+    """
+    # Summary
+
     Verify `config_actions_spec()` raises `ValueError` when `include` names an option that is not part of the fragment.
 
     ## Test

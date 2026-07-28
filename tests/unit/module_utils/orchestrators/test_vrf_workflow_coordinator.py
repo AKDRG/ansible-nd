@@ -15,6 +15,7 @@ __metaclass__ = type  # pylint: disable=invalid-name
 import pytest
 from unittest.mock import patch
 
+from ansible_collections.cisco.nd.plugins.module_utils.config_actions_resolver import ConfigDeployPlan
 from ansible_collections.cisco.nd.plugins.module_utils.orchestrators import vrf_workflow_coordinator as coordinator_mod
 from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.vrf_workflow_coordinator import (
     VrfWorkflowCoordinator,
@@ -1092,6 +1093,22 @@ def test_vrf_workflow_coordinator_00040_build_vrf_level_deploy_payload():
             "vrfNames": ["ansible-vrf-scope"],
         },
     ]
+
+
+def test_vrf_workflow_coordinator_00041_config_actions_resource_builds_vrf_level_payload():
+    """
+    # Summary
+
+    Verify config_actions.type=resource maps to VRF-level deploy payloads.
+    """
+    coordinator = VrfWorkflowCoordinator.__new__(VrfWorkflowCoordinator)
+    coordinator.config_deploy_plan = ConfigDeployPlan(save=False, deploy=True, deploy_type="resource")
+    payloads = coordinator._build_deploy_payloads(
+        [{"vrf_name": "ansible-vrf-scope"}],
+        {"ansible-vrf-scope": {"SERIAL1"}},
+    )
+
+    assert payloads == [{"vrfNames": ["ansible-vrf-scope"]}]
 
 
 def test_vrf_workflow_coordinator_00045_build_switch_level_deploy_payload_batches_by_switch_set():

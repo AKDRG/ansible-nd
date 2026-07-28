@@ -27,6 +27,31 @@ options:
     type: str
     choices: [ merged, replaced, overridden, deleted, gathered, query ]
     default: merged
+  config_actions:
+    description:
+      - Deployment controls for write operations.
+      - O(config_actions.deploy) is the default deployment decision for each
+        Network. A config item's C(deploy) value may override it for that
+        Network.
+      - O(config_actions.type=switch) deploys only the affected switches when
+        switch identifiers are available.
+      - O(config_actions.type=resource) deploys the pending Network changes by
+        Network name.
+      - Ignored for C(state=gathered) unless explicitly set, in which case the
+        module rejects deployment actions before querying.
+    type: dict
+    suboptions:
+      deploy:
+        description: Whether to deploy pending Network changes after mutation.
+        type: bool
+        default: true
+      type:
+        description: Deployment scope.
+        type: str
+        default: switch
+        choices:
+          - switch
+          - resource
   config:
     description:
       - List of Network definitions to manage.
@@ -96,14 +121,11 @@ options:
         description: Compatibility Network extension template name.
         type: str
       deploy:
-        description: Deploy pending changes for this Network.
+        description:
+          - Per-Network deployment override.
+          - When omitted, inherits O(config_actions.deploy).
         type: bool
         default: true
-      deploy_type:
-        description: Deployment scope for this Network.
-        type: str
-        choices: [ switch, network ]
-        default: switch
       attach:
         description: Switch attachment entries for this Network.
         type: list
@@ -425,7 +447,9 @@ EXAMPLES = r"""
               - mode: access
                 interface_range: Ethernet1/10
         deploy: true
-        deploy_type: switch
+    config_actions:
+      deploy: true
+      type: switch
 
 - name: Create an L3 Network associated with a VRF
   cisco.nd.nd_manage_networks:
@@ -559,6 +583,7 @@ api_metadata:
 
 from ansible.module_utils.basic import AnsibleModule
 from ansible_collections.cisco.nd.plugins.module_utils.nd import nd_argument_spec
+from ansible_collections.cisco.nd.plugins.module_utils.nd_argument_specs import config_actions_spec
 from ansible_collections.cisco.nd.plugins.module_utils.common.exceptions import NDStateMachineError
 from ansible_collections.cisco.nd.plugins.module_utils.common.pydantic_compat import require_pydantic
 from ansible_collections.cisco.nd.plugins.module_utils.orchestrators.network_workflow_coordinator import (
@@ -590,6 +615,7 @@ def main():
             options=network_parent_argument_spec(),
         ),
     )
+    argument_spec.update(config_actions_spec(include=("deploy", "type"), type_choices=("switch", "resource")))
 
     module = AnsibleModule(
         argument_spec=argument_spec,

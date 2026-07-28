@@ -8,6 +8,7 @@ import pytest
 
 from unittest.mock import patch
 
+from ansible_collections.cisco.nd.plugins.module_utils.config_actions_resolver import ConfigDeployPlan
 from ansible_collections.cisco.nd.plugins.module_utils.enums import HttpVerbEnum, OperationType
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_networks.config_models import (
     NetworkConfigModel,
@@ -180,7 +181,7 @@ def test_network_parent_argument_spec_includes_child_config():
     assert "net_name" in spec
     assert "net_id" in spec
     assert "gw_ip_subnet" in spec
-    assert spec["deploy_type"]["choices"] == ["switch", "network"]
+    assert "deploy_type" not in spec
     assert "network_id" not in child_spec
     assert "vlan_id" not in child_spec
     assert "vlan_name" not in child_spec
@@ -1331,6 +1332,16 @@ def test_network_deploy_type_network_builds_network_level_payload():
 
     assert model.to_config()["deploy_type"] == "network"
     assert NetworkAttachmentManager.build_deploy_payloads([model.to_config()], {"BLUE_NET": {"FDO123"}}) == [{"networkNames": ["BLUE_NET"]}]
+
+
+def test_network_config_actions_resource_builds_network_level_payload():
+    payloads = NetworkAttachmentManager.build_deploy_payloads(
+        [{"network_name": "BLUE_NET"}],
+        {"BLUE_NET": {"FDO123"}},
+        plan=ConfigDeployPlan(save=False, deploy=True, deploy_type="resource"),
+    )
+
+    assert payloads == [{"networkNames": ["BLUE_NET"]}]
 
 
 def test_transform_l2_network_payload_uses_manage_schema_shape():

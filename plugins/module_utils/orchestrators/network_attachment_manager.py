@@ -128,7 +128,7 @@ class NetworkAttachmentManager:
             self._trace("network_attachment_phase_noop", phase=phase, desired_count=len(desired or {}), current_count=len(current or {}))
             return {"current": current} if phase == "pre" else {}
 
-        deploy_enabled = deploy_enabled_by_network(config)
+        deploy_enabled = deploy_enabled_by_network(config, getattr(self.coordinator, "config_deploy_plan", None))
         deploy_targets: dict[str, set[str]] = {}
         for payload in payloads:
             network_name = payload.get("networkName")
@@ -602,9 +602,10 @@ class NetworkAttachmentManager:
     def build_deploy_payloads(
         config: list[dict],
         *deploy_target_maps: dict[str, set[str]],
+        plan: Any | None = None,
     ) -> list[dict[str, Any]]:
-        deploy_enabled = deploy_enabled_by_network(config)
-        deploy_types = deploy_type_by_network(config)
+        deploy_enabled = deploy_enabled_by_network(config, plan)
+        deploy_types = deploy_type_by_network(config, plan)
         grouped: dict[tuple[str, ...], set[str]] = {}
         network_level: set[str] = set()
         for target_map in deploy_target_maps:
@@ -626,6 +627,7 @@ class NetworkAttachmentManager:
     def build_delete_deploy_payloads(
         config: list[dict],
         *deploy_target_maps: dict[str, set[str]],
+        plan: Any | None = None,
     ) -> list[dict[str, Any]]:
         """
         Build deploy requests for delete cleanup.
@@ -634,7 +636,7 @@ class NetworkAttachmentManager:
         attempted, so this intentionally ignores per-Network ``deploy: false``.
         The configured deploy type is still honored as the deploy scope.
         """
-        deploy_types = deploy_type_by_network(config)
+        deploy_types = deploy_type_by_network(config, plan)
         grouped: dict[tuple[str, ...], set[str]] = {}
         network_level: set[str] = set()
         for target_map in deploy_target_maps:
@@ -658,7 +660,7 @@ class NetworkAttachmentManager:
         strategy: BaseNetworkStrategy,
     ) -> list[dict[str, Any]]:
         configured = set(configured_network_names(config))
-        deploy_enabled = deploy_enabled_by_network(config)
+        deploy_enabled = deploy_enabled_by_network(config, getattr(self.coordinator, "config_deploy_plan", None))
         pending_statuses = {"pending", "outofsync", "failed", "inprogress", "deploymentinprogress"}
         deploy_targets: dict[str, set[str]] = {}
         after_names: set[str] = set()

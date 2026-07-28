@@ -111,7 +111,7 @@ class VrfAttachmentManager:
             return {}
 
         vrf_names = configured_vrf_names(config)
-        deploy_enabled = deploy_enabled_by_vrf(config)
+        deploy_enabled = deploy_enabled_by_vrf(config, getattr(self.coordinator, "config_deploy_plan", None))
 
         query_all = state == "overridden"
         query_vrf_names = current_vrf_names
@@ -716,7 +716,7 @@ class VrfAttachmentManager:
         if not deploy_targets:
             return []
 
-        deploy_type = deploy_type_by_vrf(config)
+        deploy_type = deploy_type_by_vrf(config, getattr(self.coordinator, "config_deploy_plan", None))
         payloads: list[dict[str, Any]] = []
         vrf_level_names: list[str] = []
         switch_groups: dict[tuple[str, ...], list[str]] = {}
@@ -747,8 +747,8 @@ class VrfAttachmentManager:
         strategy: BaseVrfStrategy,
     ) -> list[dict[str, Any]]:
         """Build a deploy request for configured VRFs already pending in ND."""
-        deploy_enabled = deploy_enabled_by_vrf(config)
-        deploy_type = deploy_type_by_vrf(config)
+        deploy_enabled = deploy_enabled_by_vrf(config, getattr(self.coordinator, "config_deploy_plan", None))
+        deploy_type = deploy_type_by_vrf(config, getattr(self.coordinator, "config_deploy_plan", None))
         configured_vrfs = set(configured_vrf_names(config))
         pending_statuses = {"pending", "inProgress"}
         pending_vrfs: set[str] = set()
