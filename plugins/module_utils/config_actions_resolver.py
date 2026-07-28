@@ -43,6 +43,8 @@ class ConfigDeployCapability:
     deploy_requires_save: bool = False
     config_key: str = "config"
     item_deploy_key: str = "deploy"
+    item_deploy_requires_resource_type: bool = False
+    resource_deploy_type: str = "resource"
 
     def __post_init__(self) -> None:
         if len(set(self.deploy_types)) != len(self.deploy_types):
@@ -59,6 +61,8 @@ class ConfigDeployCapability:
             raise ValueError(f"default_type={self.default_type!r} must be one of {list(self.deploy_types)!r}")
         if not self.supports_deploy and self.deploy_types:
             raise ValueError("deploy_types must be empty when supports_deploy=False")
+        if self.item_deploy_requires_resource_type and self.resource_deploy_type not in self.deploy_types:
+            raise ValueError("resource_deploy_type must be one of deploy_types when item_deploy_requires_resource_type=True")
 
 
 @dataclass(frozen=True)
@@ -191,6 +195,7 @@ def resolve_config_deploy_plan(
     - If the requested deploy type is unsupported.
     - If read-only states request save or deploy.
     - If item-level deploy overrides are not boolean.
+    - If item-level deploy overrides are scoped to resource deploy and the requested deploy type is not resource.
     """
     module_params = dict(params or getattr(module, "params", {}) or {})
     explicit_args = dict(raw_args or get_raw_module_args())
@@ -211,6 +216,11 @@ def resolve_config_deploy_plan(
 
     config_items = _config_items(module_params.get(capability.config_key))
     _validate_item_deploy_values(config_items, capability)
+    _validate_item_deploy_scope(
+        raw_config=explicit_args.get(capability.config_key),
+        deploy_type=deploy_type,
+        capability=capability,
+    )
 
     if current_state in capability.read_only_states:
         _validate_read_only_state(
@@ -282,6 +292,22 @@ def _validate_item_deploy_values(config: list[Mapping[str, Any]], capability: Co
             continue
         if not isinstance(item.get(capability.item_deploy_key), bool):
             raise ValueError(f"{capability.config_key}[{index}].{capability.item_deploy_key} must be a boolean when provided")
+
+
+def _validate_item_deploy_scope(
+    *,
+    raw_config: Any,
+    deploy_type: str,
+    capability: ConfigDeployCapability,
+) -> None:
+    if not capability.item_deploy_requires_resource_type or deploy_type == capability.resource_deploy_type:
+        return
+    for index, item in enumerate(_config_items(raw_config)):
+        if capability.item_deploy_key in item and item.get(capability.item_deploy_key) is not None:
+            raise ValueError(
+                f"{capability.config_key}[{index}].{capability.item_deploy_key} is allowed only when "
+                f"config_actions.type={capability.resource_deploy_type!r}"
+            )
 
 
 def _validate_read_only_state(
