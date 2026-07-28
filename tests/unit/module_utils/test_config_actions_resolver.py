@@ -38,6 +38,12 @@ def test_config_actions_resolver_00000_capability_rejects_impossible_defaults() 
     with pytest.raises(ValueError, match="deploy_requires_save=True requires supports_save=True"):
         ConfigDeployCapability(deploy_requires_save=True)
 
+    with pytest.raises(ValueError, match="resource_deploy_type must be one of deploy_types"):
+        ConfigDeployCapability(
+            deploy_types=("switch",),
+            item_deploy_requires_resource_type=True,
+        )
+
 
 def test_config_actions_resolver_00200_resolve_plan_uses_defaults_and_item_overrides() -> None:
     """
@@ -169,6 +175,62 @@ def test_config_actions_resolver_00310_resolve_plan_rejects_deploy_without_requi
             params={"state": "merged", "config_actions": {"save": False, "deploy": True}},
             raw_args={"config_actions": {"save": False, "deploy": True}},
         )
+
+
+def test_config_actions_resolver_00320_item_deploy_requires_resource_scope_when_enabled() -> None:
+    """
+    # Summary
+
+    Verify modules can restrict per-item deploy overrides to resource-scoped deploy.
+
+    ## Raises
+
+    None
+    """
+    capability = ConfigDeployCapability(
+        deploy_types=("switch", "resource"),
+        item_deploy_requires_resource_type=True,
+    )
+
+    with pytest.raises(ValueError, match=r"config\[0\]\.deploy is allowed only when config_actions.type='resource'"):
+        resolve_config_deploy_plan(
+            capability=capability,
+            params={
+                "state": "merged",
+                "config_actions": {"type": "switch"},
+                "config": [{"name": "BLUE", "deploy": True}],
+            },
+            raw_args={
+                "config_actions": {"type": "switch"},
+                "config": [{"name": "BLUE", "deploy": True}],
+            },
+        )
+
+    plan = resolve_config_deploy_plan(
+        capability=capability,
+        params={
+            "state": "merged",
+            "config_actions": {"type": "resource"},
+            "config": [{"name": "BLUE", "deploy": False}],
+        },
+        raw_args={
+            "config_actions": {"type": "resource"},
+            "config": [{"name": "BLUE", "deploy": False}],
+        },
+    )
+    assert plan.item_deploy_enabled({"name": "BLUE", "deploy": False}) is False
+
+    plan = resolve_config_deploy_plan(
+        capability=capability,
+        params={
+            "state": "merged",
+            "config_actions": {"type": "switch"},
+            "config": [{"name": "BLUE", "deploy": True}],
+        },
+        raw_args={"config_actions": {"type": "switch"}, "config": [{"name": "BLUE"}]},
+    )
+    assert plan.deploy is True
+    assert plan.deploy_type == "switch"
 
 
 def test_config_actions_resolver_00400_gathered_ignores_defaults_but_rejects_explicit_writes() -> None:
