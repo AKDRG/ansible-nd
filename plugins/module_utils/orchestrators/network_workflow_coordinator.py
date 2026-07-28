@@ -220,6 +220,7 @@ class NetworkWorkflowCoordinator:
             default_type="switch",
             default_deploy=True,
             config_key="config",
+            item_deploy_requires_resource_type=True,
         )
         try:
             plan = resolve_config_deploy_plan(
