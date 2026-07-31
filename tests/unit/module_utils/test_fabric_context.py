@@ -353,12 +353,14 @@ def test_fabric_context_00200() -> None:
     ## Test
 
     - GET to `/api/v1/manage/fabrics/{fabric_name}/switches` returns two switches
-    - `switch_map` contains both IPs mapped to their switchIds
+    - `switch_rows` contains both raw rows
+    - `switch_map` contains both IPs mapped to their switchIds without another GET
     - `get_switch_id` resolves known IPs
     - `get_switch_id` raises `RuntimeError` for unknown IP
 
     ## Classes and Methods
 
+    - FabricContext.switch_rows
     - FabricContext.switch_map
     - FabricContext.get_switch_id
     """
@@ -373,8 +375,10 @@ def test_fabric_context_00200() -> None:
 
     with does_not_raise():
         instance = FabricContext(rest_send=rest_send, fabric_name="fabric_1")
+        switch_rows = instance.switch_rows
         switch_map = instance.switch_map
 
+    assert len(switch_rows) == 2
     assert switch_map == {
         "192.168.12.151": "FDO12345ABC",
         "192.168.12.152": "FDO12345ABD",
@@ -434,18 +438,18 @@ def test_fabric_context_00220() -> None:
     """
     # Summary
 
-    Verify `invalidate` drops cached state so the next switch_map access re-fetches from the API.
+    Verify `invalidate_switches` drops cached switch state so the next switch_map access re-fetches from the API.
 
     ## Test
 
     - First `switch_map` access fetches the one-switch response and caches it
-    - `invalidate()` is called
+    - `invalidate_switches()` is called
     - Second `switch_map` access fetches the two-switch response and reflects the new state
     - Both IP- and ID-keyed maps are refreshed
 
     ## Classes and Methods
 
-    - FabricContext.invalidate
+    - FabricContext.invalidate_switches
     - FabricContext.switch_map
     - FabricContext.switch_map_by_id
     """
@@ -461,7 +465,7 @@ def test_fabric_context_00220() -> None:
     instance = FabricContext(rest_send=rest_send, fabric_name="fabric_1")
     with does_not_raise():
         first_map = instance.switch_map
-        instance.invalidate()
+        instance.invalidate_switches()
         second_map = instance.switch_map
         second_map_by_id = instance.switch_map_by_id
 

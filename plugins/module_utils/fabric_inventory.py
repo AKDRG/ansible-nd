@@ -11,6 +11,7 @@ from typing import Any
 from ansible_collections.cisco.nd.plugins.module_utils.endpoints.v1.manage.manage_fabrics_switches import (
     EpManageFabricsSwitchesGet,
 )
+from ansible_collections.cisco.nd.plugins.module_utils.fabric_context import FabricContext
 from ansible_collections.cisco.nd.plugins.module_utils.nd_config_collection import (
     NDConfigCollection,
 )
@@ -26,13 +27,14 @@ from ansible_collections.cisco.nd.plugins.module_utils.manage_switches.utils imp
 class FabricSwitchInventory:
     """Index a list of switch model instances for fast lookup by IP or ID.
 
-    Use :meth:`from_fabric` to fetch, parse, and index in a single call, or
-    construct directly from an already-parsed list.  :meth:`by_ip` and
+    Use :meth:`from_context` to parse cached switch rows, or construct
+    directly from an already-parsed list.  :meth:`by_ip` and
     :meth:`by_id` return keyed lookup dicts.
 
     Example::
 
-        inventory = FabricSwitchInventory.from_fabric(nd, fabric, log, SwitchDataModel)
+        fabric_context = FabricContext(rest_send, fabric)
+        inventory = FabricSwitchInventory.from_context(fabric_context, SwitchDataModel)
         switch = inventory.by_ip().get("192.0.2.1")
         switch = inventory.by_id().get("FDO123456AB")
         collection = inventory.collection  # NDConfigCollection
@@ -46,6 +48,40 @@ class FabricSwitchInventory:
         """
         self.switches: list = switches
         self.collection: NDConfigCollection | None = None
+
+    @classmethod
+    def from_rows(cls, rows: list[dict[str, Any]], model_class: type) -> "FabricSwitchInventory":
+        """
+        # Summary
+
+        Parse raw switch rows into a typed inventory without issuing any API
+        requests.
+
+        ## Raises
+
+        - `ValueError`: Raised by the model collection when any row cannot be
+            parsed by ``model_class``.
+        """
+        collection = NDConfigCollection.from_api_response(response_data=rows, model_class=model_class)
+        instance = cls(list(collection))
+        instance.collection = collection
+        return instance
+
+    @classmethod
+    def from_context(cls, fabric_context: FabricContext, model_class: type) -> "FabricSwitchInventory":
+        """
+        # Summary
+
+        Build typed switch inventory from a ``FabricContext`` cached switch
+        snapshot.
+
+        ## Raises
+
+        - `RuntimeError`: Raised when the context switch inventory query fails.
+        - `ValueError`: Raised when the switch rows cannot be parsed by
+            ``model_class``.
+        """
+        return cls.from_rows(fabric_context.switch_rows, model_class)
 
     @classmethod
     def from_fabric(cls, nd, fabric: str, log: logging.Logger, model_class: type) -> "FabricSwitchInventory":
@@ -63,10 +99,7 @@ class FabricSwitchInventory:
             ``collection`` populated.
         """
         raw = cls.query_fabric_switches(nd, fabric, log)
-        collection = NDConfigCollection.from_api_response(response_data=raw, model_class=model_class)
-        instance = cls(list(collection))
-        instance.collection = collection
-        return instance
+        return cls.from_rows(raw, model_class)
 
     def by_ip(self) -> dict[str, Any]:
         """Return switches keyed by fabric management IP address.

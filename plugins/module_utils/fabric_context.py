@@ -14,6 +14,8 @@ the `local` and `fabricStatus` fields used by the pre-flight checks.
 
 from __future__ import annotations
 
+from typing import Any
+
 from ansible_collections.cisco.nd.plugins.module_utils.endpoints.v1.manage.manage_fabrics import EpManageFabricsSummaryGet
 from ansible_collections.cisco.nd.plugins.module_utils.endpoints.v1.manage.manage_switches import EpManageSwitchesListGet
 from ansible_collections.cisco.nd.plugins.module_utils.enums import HttpVerbEnum
@@ -55,10 +57,11 @@ class FabricContext:
         self._rest_send = rest_send
         self._fabric_name = fabric_name
         self._fabric_summary = _NOT_FETCHED
+        self._switch_rows: list[dict[str, Any]] | object = _NOT_FETCHED
         self._switch_map: dict[str, str] | None = None
         self._switch_map_by_id: dict[str, str] | None = None
 
-    def _query_get(self, path: str) -> dict:
+    def _query_get(self, path: str) -> Any:
         """
         # Summary
 
@@ -168,6 +171,23 @@ class FabricContext:
             return False
         return summary.get("fabricStatus") == "frozen"
 
+    def invalidate_switches(self) -> None:
+        """
+        # Summary
+
+        Drop cached switch inventory rows and derived lookup maps.
+
+        Use this after switch membership or inventory metadata changes so the
+        next switch inventory access fetches a fresh controller snapshot.
+
+        ## Raises
+
+        None
+        """
+        self._switch_rows = _NOT_FETCHED
+        self._switch_map = None
+        self._switch_map_by_id = None
+
     def invalidate(self) -> None:
         """
         # Summary
@@ -180,8 +200,42 @@ class FabricContext:
         None
         """
         self._fabric_summary = _NOT_FETCHED
-        self._switch_map = None
-        self._switch_map_by_id = None
+        self.invalidate_switches()
+
+    @property
+    def switch_rows(self) -> list[dict[str, Any]]:
+        """
+        # Summary
+
+        Return cached raw switch inventory rows for the fabric.
+
+        The Manage switches endpoint may return either a list directly or a
+        dictionary containing a ``switches`` list. Both shapes are normalized
+        into a list and cached for the current module run.
+
+        ## Raises
+
+        - `ValueError`: Raised when the controller response is not a list or a
+            dictionary containing switch rows.
+        """
+        if self._switch_rows is _NOT_FETCHED:
+            ep = EpManageSwitchesListGet()
+            ep.fabric_name = self._fabric_name
+            result = self._query_get(ep.path)
+            if not result:
+                self._switch_rows = []
+            elif isinstance(result, list):
+                self._switch_rows = result
+            elif isinstance(result, dict):
+                switches = result.get("switches", [])
+                if not isinstance(switches, list):
+                    raise ValueError(f"GET {ep.path} returned 'switches' as {type(switches).__name__}; expected list")
+                self._switch_rows = switches
+            else:
+                raise ValueError(f"GET {ep.path} returned {type(result).__name__}; expected list or dictionary DATA")
+        if not isinstance(self._switch_rows, list):
+            raise AssertionError("switch_rows cache is not a list after fetch")
+        return self._switch_rows
 
     def _load_switch_maps(self) -> None:
         """
@@ -197,12 +251,13 @@ class FabricContext:
         """
         if self._switch_map is not None:
             return
-        ep = EpManageSwitchesListGet()
-        ep.fabric_name = self._fabric_name
-        result = self._query_get(ep.path)
-        switches = (result.get("switches") or []) if result else []
-        self._switch_map = {sw["fabricManagementIp"]: sw["switchId"] for sw in switches if sw.get("fabricManagementIp") and sw.get("switchId")}
-        self._switch_map_by_id = {sw["switchId"]: sw["fabricManagementIp"] for sw in switches if sw.get("switchId") and sw.get("fabricManagementIp")}
+        switches = self.switch_rows
+        self._switch_map = {
+            sw["fabricManagementIp"]: sw["switchId"] for sw in switches if isinstance(sw, dict) and sw.get("fabricManagementIp") and sw.get("switchId")
+        }
+        self._switch_map_by_id = {
+            sw["switchId"]: sw["fabricManagementIp"] for sw in switches if isinstance(sw, dict) and sw.get("switchId") and sw.get("fabricManagementIp")
+        }
 
     @property
     def switch_map(self) -> dict[str, str]:

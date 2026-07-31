@@ -345,6 +345,8 @@ def _resource(state="merged", *, config=None, check_mode=False, existing=None, o
     resource.sent = NDConfigCollection(model_class=SwitchDataModel)
     resource.sent_adds = []
     resource.proposed_cfgs = []
+    resource.inventory_stale = False
+    resource.fabric_context = SimpleNamespace(invalidate_switches=lambda: None)
     resource._plan = None
     resource.nd_logs = []
     resource.msg = ""
@@ -1377,11 +1379,42 @@ def test_exit_json_check_mode_uses_synthetic_before_after_diff():
     assert final["diff"][0]["_action"] == "added"
 
 
-def test_exit_json_normal_requeries_inventory_and_builds_delete_add_diff(monkeypatch):
-    """exit_json normal branch re-queries successful runs and combines delete/add diffs."""
+def test_exit_json_normal_skips_requery_when_inventory_is_not_stale(monkeypatch):
+    """exit_json normal branch reuses initial inventory when no switch inventory mutation occurred."""
+    before = [_sw("192.0.2.10", "SERIAL1")]
+    resource = _resource(state="merged", existing=before, output_level="info")
+    resource.proposed_cfgs = [_cfg("192.0.2.10")]
+    resource.results.action = "query"
+    resource.results.operation_type = OperationType.QUERY
+    resource.results.response_current = {"MESSAGE": "no change"}
+    resource.results.result_current = {"success": True, "changed": False}
+    resource.results.diff_current = {}
+    resource.results.register_api_call()
+
+    def fail_from_context(*_args, **_kwargs):
+        raise AssertionError("idempotent runs should not re-query inventory")
+
+    monkeypatch.setattr(
+        "ansible_collections.cisco.nd.plugins.module_utils.manage_switches.nd_switch_resources.FabricSwitchInventory.from_context",
+        fail_from_context,
+    )
+
+    resource.exit_json()
+
+    final = resource.module.exit_kwargs
+    assert final["changed"] is False
+    assert final["before"][0]["seed_ip"] == "192.0.2.10"
+    assert final["after"][0]["seed_ip"] == "192.0.2.10"
+
+
+def test_exit_json_normal_refreshes_stale_inventory_and_builds_delete_add_diff(monkeypatch):
+    """exit_json normal branch refreshes successful stale runs and combines delete/add diffs."""
     before = [_sw("192.0.2.10", "SERIAL1")]
     after = [_sw("192.0.2.11", "SERIAL2")]
     resource = _resource(state="merged", existing=before, output_level="info")
+    invalidations = []
+    resource.fabric_context = SimpleNamespace(invalidate_switches=lambda: invalidations.append("switches"))
+    resource.inventory_stale = True
     resource.sent.add(before[0])
     resource.sent_adds.append(_cfg("192.0.2.11"))
     resource.proposed_cfgs = [_cfg("192.0.2.11")]
@@ -1394,19 +1427,21 @@ def test_exit_json_normal_requeries_inventory_and_builds_delete_add_diff(monkeyp
 
     requery_calls = []
 
-    def fake_from_fabric(nd, fabric, log, model_class):  # pylint: disable=unused-argument
-        requery_calls.append(fabric)
+    def fake_from_context(fabric_context, model_class):  # pylint: disable=unused-argument
+        requery_calls.append(fabric_context)
         return SimpleNamespace(collection=NDConfigCollection(model_class=SwitchDataModel, items=after))
 
     monkeypatch.setattr(
-        "ansible_collections.cisco.nd.plugins.module_utils.manage_switches.nd_switch_resources.FabricSwitchInventory.from_fabric",
-        fake_from_fabric,
+        "ansible_collections.cisco.nd.plugins.module_utils.manage_switches.nd_switch_resources.FabricSwitchInventory.from_context",
+        fake_from_context,
     )
 
     resource.exit_json()
 
     final = resource.module.exit_kwargs
-    assert requery_calls == ["FAB1"]
+    assert invalidations == ["switches"]
+    assert requery_calls == [resource.fabric_context]
+    assert resource.inventory_stale is False
     assert final["changed"] is True
     assert final["before"][0]["seed_ip"] == "192.0.2.10"
     assert final["after"][0]["seed_ip"] == "192.0.2.11"
@@ -1424,12 +1459,14 @@ def test_exit_json_failed_results_skip_requery_and_fail_json(monkeypatch):
     resource.results.diff_current = {"attempted": True}
     resource.results.register_api_call()
 
-    def fail_from_fabric(*_args, **_kwargs):
+    resource.inventory_stale = True
+
+    def fail_from_context(*_args, **_kwargs):
         raise AssertionError("failed runs should not re-query inventory")
 
     monkeypatch.setattr(
-        "ansible_collections.cisco.nd.plugins.module_utils.manage_switches.nd_switch_resources.FabricSwitchInventory.from_fabric",
-        fail_from_fabric,
+        "ansible_collections.cisco.nd.plugins.module_utils.manage_switches.nd_switch_resources.FabricSwitchInventory.from_context",
+        fail_from_context,
     )
 
     with pytest.raises(FailJsonError):

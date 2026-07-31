@@ -69,6 +69,9 @@ from ansible_collections.cisco.nd.plugins.module_utils.models.manage_switches.co
 from ansible_collections.cisco.nd.plugins.module_utils.fabric_inventory import (
     FabricSwitchInventory,
 )
+from ansible_collections.cisco.nd.plugins.module_utils.fabric_context import (
+    FabricContext,
+)
 from ansible_collections.cisco.nd.plugins.module_utils.fabric_details_cache import (
     FabricDetailsCache,
 )
@@ -2701,12 +2704,14 @@ class NDSwitchResourceModule:
         # Switch collections
         try:
             self.proposed: NDConfigCollection = NDConfigCollection(model_class=SwitchDataModel)
-            self.inventory = FabricSwitchInventory.from_fabric(nd, self.fabric, log, SwitchDataModel)
+            self.fabric_context = FabricContext(self.nd._get_rest_send(), self.fabric)  # pylint: disable=protected-access
+            self.inventory = FabricSwitchInventory.from_context(self.fabric_context, SwitchDataModel)
             self.existing: NDConfigCollection = self.inventory.collection
             self.before: NDConfigCollection = self.existing.copy()
             self.sent: NDConfigCollection = NDConfigCollection(model_class=SwitchDataModel)
             self.sent_adds: list[SwitchConfigModel] = []
             self.proposed_cfgs: list[SwitchConfigModel] = []
+            self.inventory_stale = False
             # Plan stored here after compute_changes so check-mode output can use it
             self._plan: SwitchPlan | None = None
         except _FABRIC_OPERATION_ERRORS as e:
@@ -2733,6 +2738,43 @@ class NDSwitchResourceModule:
         self.rma_handler = RMAHandler(self.ctx, self.fabric_ops, self.wait_utils, self.bootstrap_cache)
 
         log.info("Initialized NDSwitchResourceModule for fabric: %s", self.fabric)
+
+    def _mark_inventory_stale(self, reason: str) -> None:
+        """
+        # Summary
+
+        Mark the cached switch inventory as stale after a successful switch
+        inventory mutation.
+
+        ## Raises
+
+        None
+        """
+        if not getattr(self, "inventory_stale", False):
+            self.log.debug("Switch inventory marked stale: %s", reason)
+        self.inventory_stale = True
+
+    def _refresh_inventory_if_stale(self) -> None:
+        """
+        # Summary
+
+        Refresh the post-operation switch inventory only when a workflow changed
+        switch membership or inventory-visible metadata.
+
+        ## Raises
+
+        - `RuntimeError`: Raised when the refreshed inventory query fails.
+        - `ValueError`: Raised when the refreshed inventory payload cannot be
+            parsed.
+        """
+        if not getattr(self, "inventory_stale", False):
+            self.log.debug("Switch inventory unchanged; reusing initial snapshot for after output")
+            return
+        self.log.debug("Refreshing switch inventory after successful mutation")
+        self.fabric_context.invalidate_switches()
+        self.inventory = FabricSwitchInventory.from_context(self.fabric_context, SwitchDataModel)
+        self.existing = self.inventory.collection
+        self.inventory_stale = False
 
     def _inventory_to_config_list(self, collection: "NDConfigCollection") -> list[dict[str, Any]]:
         """Convert an inventory collection (SwitchDataModel) to gathered-format config dicts.
@@ -2952,10 +2994,8 @@ class NDSwitchResourceModule:
         elif self.nd.module.check_mode:
             final.update(self._build_check_mode_output())
         else:
-            # Re-query the fabric to get the actual post-operation inventory so
-            # that "after" reflects real state rather than the pre-op snapshot.
             if True not in self.results.failed:
-                self.existing = FabricSwitchInventory.from_fabric(self.nd, self.fabric, self.log, SwitchDataModel).collection
+                self._refresh_inventory_if_stale()
             # Build diff: deletes (from self.sent) + adds (from self.sent_adds)
             diff_list: list[dict[str, Any]] = []
             for sw in self.sent:
@@ -3234,6 +3274,7 @@ class NDSwitchResourceModule:
                         switch_actions.append((sn, cfg))
                         self._log_operation("add", cfg.seed_ip)
                         self.sent_adds.append(cfg)
+                self._mark_inventory_stale("bulk_add")
 
         # Migration-mode switches — no add needed, but role + finalize applies
         for cfg in spec.plan.migration_mode:
@@ -3252,6 +3293,7 @@ class NDSwitchResourceModule:
                     update_roles=have_migration,
                 )
             )
+            self._mark_inventory_stale(f"{spec.context} post-add processing")
 
         return switch_actions
 
@@ -3383,9 +3425,11 @@ class NDSwitchResourceModule:
         if poap_workflow_configs:
             self.sent_adds.extend(poap_workflow_configs)
             self.poap_handler.handle(poap_workflow_configs, list(self.existing))
+            self._mark_inventory_stale("poap workflow")
         if plan.to_rma:
             self.sent_adds.extend(plan.to_rma)
             self.rma_handler.handle(plan.to_rma, list(self.existing))
+            self._mark_inventory_stale("rma workflow")
 
         self.log.debug("EXIT: _handle_merged_state()")
 
@@ -3495,6 +3539,7 @@ class NDSwitchResourceModule:
                 self.nd.module.fail_json(msg=msg)
             for sw in switches_to_delete:
                 self.sent.add(sw)
+            self._mark_inventory_stale("overridden bulk_delete")
 
         # --- Phase 2: Re-discover updated normal switches -----------------------
         # to_update configs were already discovered (they were in-fabric) but
@@ -3534,6 +3579,7 @@ class NDSwitchResourceModule:
         if poap_workflow_configs:
             self.sent_adds.extend(poap_workflow_configs)
             self.poap_handler.handle(poap_workflow_configs, list(self.existing))
+            self._mark_inventory_stale("overridden poap workflow")
 
         self.log.debug("EXIT: _handle_overridden_state()")
 
@@ -3638,6 +3684,7 @@ class NDSwitchResourceModule:
                 self.nd.module.fail_json(msg=msg)
             for sw in switches_to_delete:
                 self.sent.add(sw)
+            self._mark_inventory_stale("replaced bulk_delete")
 
         # --- Phase 2: Re-discover updated normal switches -----------------------
         re_discover_configs = [cfg for cfg in plan.to_update if cfg.seed_ip in update_ips]
@@ -3673,6 +3720,7 @@ class NDSwitchResourceModule:
         if poap_workflow_configs:
             self.sent_adds.extend(poap_workflow_configs)
             self.poap_handler.handle(poap_workflow_configs, list(self.existing))
+            self._mark_inventory_stale("replaced poap workflow")
 
         self.log.debug("EXIT: _handle_replaced_state()")
 
@@ -3788,6 +3836,7 @@ class NDSwitchResourceModule:
         self.fabric_ops.bulk_delete(switches_to_delete)
         for sw in switches_to_delete:
             self.sent.add(sw)
+        self._mark_inventory_stale("deleted bulk_delete")
         self.log.debug("EXIT: _handle_deleted_state()")
 
     # =====================================================================

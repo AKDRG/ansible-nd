@@ -125,3 +125,30 @@ def test_from_fabric_builds_collection(monkeypatch):
     assert inventory.collection is not None
     assert set(inventory.by_ip()) == {"192.0.2.10", "192.0.2.11"}
     assert inventory.by_id()["SERIAL2"].switch_role == "spine"
+
+
+def test_from_rows_builds_collection_without_api_query():
+    """from_rows parses raw switch rows into an indexed model collection."""
+    raw = [
+        {"switchId": "SERIAL1", "serialNumber": "SERIAL1", "fabricManagementIp": "192.0.2.10", "switchRole": "leaf"},
+        {"switchId": "SERIAL2", "serialNumber": "SERIAL2", "fabricManagementIp": "192.0.2.11", "switchRole": "spine"},
+    ]
+
+    inventory = FabricSwitchInventory.from_rows(raw, SwitchDataModel)
+
+    assert inventory.collection is not None
+    assert set(inventory.by_ip()) == {"192.0.2.10", "192.0.2.11"}
+    assert inventory.by_id()["SERIAL2"].switch_role == "spine"
+
+
+def test_from_context_uses_cached_switch_rows():
+    """from_context consumes FabricContext switch_rows without owning an API query."""
+    raw = [
+        {"switchId": "SERIAL1", "serialNumber": "SERIAL1", "fabricManagementIp": "192.0.2.10", "switchRole": "leaf"},
+    ]
+    context = SimpleNamespace(switch_rows=raw)
+
+    inventory = FabricSwitchInventory.from_context(context, SwitchDataModel)
+
+    assert inventory.collection is not None
+    assert inventory.by_ip()["192.0.2.10"].switch_id == "SERIAL1"
