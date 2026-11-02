@@ -407,17 +407,17 @@ def test_maintenance_mode_00220() -> None:
     """
     # Summary
 
-    Verify `update` raises with switch IPs when the 207 body contains per-switch failures.
+    Verify shared response validation raises when the 207 body contains per-switch failures.
 
     ## Test
 
     - POST returns 207 with one item status=failed
-    - `RuntimeError` raised; message names the offending switch IP (resolved from switchId)
+    - `RuntimeError` raised; the shared strategy names the offending switchId and controller reason
 
     ## Classes and Methods
 
     - MaintenanceModeOrchestrator.update
-    - MaintenanceModeOrchestrator._raise_on_207_failures
+    - NdV1Strategy.is_success
     """
     method_name = inspect.stack()[0][3]
 
@@ -433,9 +433,10 @@ def test_maintenance_mode_00220() -> None:
 
     model = MaintenanceModeModel.from_config(config[0])
 
-    match = r"changeSystemMode reported per-switch failures:.*192\.168\.12\.131.*deploy aborted"
+    match = r"changeSystemMode failed: Request failed \(207\).*9UOJ3E8A6O9.*deploy aborted"
     with pytest.raises(RuntimeError, match=match):
         instance.update(model)
+    assert len(rest_send.responses) == 3
 
 
 def test_maintenance_mode_00230() -> None:

@@ -58,14 +58,15 @@ _MULTISTATUS_FAILURE_STATUSES = frozenset({"failed", "failure", "error"})
 # Per-item status literal that marks a successful item in a Multi-Status body.
 _MULTISTATUS_SUCCESS_STATUSES = frozenset({"success"})
 
-# DATA envelope keys whose items carry a per-item `status`. Three known shapes:
+# DATA envelope keys whose items carry a per-item `status`:
 # - `results`   -> batch interface POST / breakout action
 # - `switchIds` -> switchActions/deploy (per-switch outcome)
 # - `links`     -> bulk link create (POST /links) and bulk link delete (POST /linkActions/remove),
 #                  items {linkId, message, status} with status success|failure. The GET /links list
 #                  body rides the same `links` envelope, but its link objects carry no top-level
 #                  `status` key, so the literal-gated scan cannot false-positive on queries.
-_MULTISTATUS_ITEM_KEYS = ("results", "switchIds", "links")
+# - `items`    -> switchActions/remove (per-switch outcome)
+_MULTISTATUS_ITEM_KEYS = ("results", "switchIds", "links", "items")
 
 # Item keys, in priority order, used to label a failing item in an error message.
 _MULTISTATUS_ITEM_LABEL_KEYS = ("name", "switchId", "serialNumber", "linkId", "id")
@@ -162,7 +163,8 @@ def _multistatus_items_with_status(response: dict, statuses: frozenset[str]) -> 
 
     ## Description
 
-    Scans the known ND Multi-Status envelope arrays (`DATA.results[]`, `DATA.switchIds[]`, and `DATA.links[]`) and returns every item whose `status`
+    Scans the known ND Multi-Status envelope arrays (`DATA.results[]`, `DATA.switchIds[]`, `DATA.links[]`, `DATA.items[]`)
+    and returns every item whose `status`
     matches one of `statuses` (case-insensitive, whitespace-tolerant). Returns an empty list when `DATA` is not a dict, none of the arrays is
     present, or no item matches.
 
@@ -329,7 +331,7 @@ def _non_success_multistatus_items(response: dict) -> list[dict[str, Any]]:
     `multi-status-207-status-field-inconsistent`; issue #397) — so only an exact `success` (case/whitespace-tolerant) may normally be trusted. The
     sole exception is the endpoint-specific ``switchActions/deploy`` no-op recognized by `_is_benign_switch_deploy_noop`. A missing or empty
     `status` counts as non-success. Scans the same envelope arrays as `_failed_multistatus_items` (`DATA.results[]`, `DATA.switchIds[]`,
-    `DATA.links[]`). NOT for plain-200 bodies: ND ships legitimately status-less item arrays on 200 (e.g. the GET /links list envelope), which the
+    `DATA.links[]`, `DATA.items[]`). NOT for plain-200 bodies: ND ships legitimately status-less item arrays on 200 (e.g. GET /links), which the
     failure-literal denylist correctly ignores.
 
     ## Parameters
@@ -376,7 +378,7 @@ class NdV1Strategy:
     3. error: Scalar DATA.error value
     4. messages array: all DATA.messages[].{code, severity, message} joined with "; "
     5. errors array: all DATA.errors[] joined with "; "
-    6. Multi-Status per-item failures: DATA.results[]/DATA.switchIds[]/DATA.links[] failing items joined with "; "
+    6. Multi-Status per-item failures: DATA.results[]/DATA.switchIds[]/DATA.links[]/DATA.items[] failing items joined with "; "
     7. Connection failure: No DATA with REQUEST_PATH and MESSAGE
     8. Non-dict DATA: Stringified DATA value
     9. Unknown: Fallback with RETURN_CODE
@@ -438,7 +440,7 @@ class NdV1Strategy:
         - Top-level `ERROR` key is present
         - `DATA.error` key is present
         - A Multi-Status body reports a per-item failure in `DATA.results[]`,
-          `DATA.switchIds[]`, or `DATA.links[]` (status `failed`/`failure`/`error`). This is
+          `DATA.switchIds[]`, `DATA.links[]`, or `DATA.items[]` (status `failed`/`failure`/`error`). This is
           checked on any success code, not only 207: ND sends per-item statuses on HTTP 200
           for some endpoints (e.g. the L3Out batch POST).
         - On `RETURN_CODE` 207 specifically, any envelope item whose `status` is not exactly `success` — softer literals like
@@ -468,7 +470,7 @@ class NdV1Strategy:
         if isinstance(data, dict) and data.get("error") is not None:
             return False
         # ND reports per-item outcomes for batch operations in DATA.results[]/DATA.switchIds[]/
-        # DATA.links[] items carrying status: success|failed|failure|error. The HTTP status alone does not
+        # DATA.links[] or DATA.items[] items carrying status: success|failed|failure|error. The HTTP status alone does not
         # indicate every item succeeded -- ND sends these bodies on 207 and, for some endpoints,
         # on plain 200 -- so any success-code response with a failing item must not be
         # classified as success. See issue #295.
@@ -499,7 +501,7 @@ class NdV1Strategy:
 
         ## Parameters
 
-        - item: A per-item dict from `DATA.results[]`, `DATA.switchIds[]`, or `DATA.links[]`
+        - item: A per-item dict from `DATA.results[]`, `DATA.switchIds[]`, `DATA.links[]`, or `DATA.items[]`
 
         ## Returns
 
@@ -624,7 +626,7 @@ class NdV1Strategy:
         Called for POST/PUT/DELETE responses after `is_success` has returned `False`. A Multi-Status body can mix successful and failed per-item
         outcomes, so an aggregate failure does not imply nothing changed. The `modified` response header, when present and parseable, is
         authoritative (mirroring `is_changed`); otherwise any per-item `status` of `success` in the recognized envelope arrays (`DATA.results[]`,
-        `DATA.switchIds[]`, `DATA.links[]`) reports `True`. Non-itemized failures (e.g. `DATA.error` on a 200) report `False`, preserving the
+        `DATA.switchIds[]`, `DATA.links[]`, `DATA.items[]`) reports `True`. Non-itemized failures (e.g. `DATA.error` on a 200) report `False`, preserving the
         conservative historical default.
 
         ## Parameters
@@ -663,7 +665,7 @@ class NdV1Strategy:
         4. Scalar error key (DATA.error)
         5. messages array with code/severity/message (all items joined)
         6. errors array (all items joined)
-        7. Multi-Status per-item failures (results[]/switchIds[]/links[], all joined)
+        7. Multi-Status per-item failures (results[]/switchIds[]/links[]/items[], all joined)
         8. Unknown dict format
         9. Non-dict DATA
 
@@ -755,7 +757,7 @@ class NdV1Strategy:
             if errors:
                 msg = f"ND Error: {'; '.join(str(e) for e in errors)}"
 
-        # Multi-Status per-item failures (results[]/switchIds[]/links[]). Mirrors is_success:
+        # Multi-Status per-item failures (results[]/switchIds[]/links[]/items[]). Mirrors is_success:
         # on a 207 every item other than exact success or the narrowly recognized switch-deploy
         # no-op is reported (including status-less items), so the message names the item ND
         # rejected rather than falling through to the generic fallback.

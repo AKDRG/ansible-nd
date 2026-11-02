@@ -24,7 +24,7 @@ from ansible_collections.cisco.nd.plugins.module_utils.common.exceptions import 
 )
 
 from ansible_collections.cisco.nd.plugins.module_utils.nd_v2 import NDModule
-from ansible_collections.cisco.nd.plugins.module_utils.enums import OperationType, PlatformType
+from ansible_collections.cisco.nd.plugins.module_utils.enums import HttpVerbEnum, OperationType, PlatformType
 from ansible_collections.cisco.nd.plugins.module_utils.nd_config_collection import (
     NDConfigCollection,
 )
@@ -131,6 +131,7 @@ class ApiCallSpec:
     op_type: OperationType
     diff: dict[str, Any] | None = None
     context: str = ""
+    verbosity_level: int = 2
 
 
 @dataclass
@@ -262,6 +263,7 @@ class SwitchServiceContext:
 
         - The API response dict.
         """
+        error_message = None
         try:
             _request_with_retry_policy(
                 self.nd,
@@ -269,7 +271,9 @@ class SwitchServiceContext:
                 verb=spec.endpoint.verb,
                 data=spec.payload,
             )
-        except _REQUEST_ERRORS as e:
+        except NDModuleError as error:
+            error_message = f"{spec.context}: {error}" if spec.context else str(error)
+        except (TypeError, ValueError) as e:
             msg = f"{spec.context}: {e}" if spec.context else str(e)
             self.log.error(msg)
             self.nd.module.fail_json(msg=msg)
@@ -278,17 +282,43 @@ class SwitchServiceContext:
         result = self.nd.rest_send.result_current
         ApiDataChecker.check(response.get("DATA", {}), spec.context, self.log, self.nd.module.fail_json)
 
+        diff = spec.diff if spec.diff is not None else spec.payload
+        if isinstance(spec.endpoint, EpManageFabricsSwitchActionsRemovePost) and response.get("RETURN_CODE") == 207:
+            # Only controller-confirmed targets belong in the deletion diff.
+            data = response.get("DATA")
+            items = data.get("items") if isinstance(data, dict) else None
+            confirmed = (
+                {
+                    item.get("switchId")
+                    for item in items
+                    if isinstance(item, dict) and isinstance(item.get("switchId"), str) and str(item.get("status") or "").strip().lower() == "success"
+                }
+                if isinstance(items, list)
+                else set()
+            )
+            requested = spec.payload["switchIds"]
+            deleted = [serial for serial in requested if serial in confirmed]
+            diff = {"deleted": deleted}
+            if result.get("success") and len(deleted) != len(requested):
+                result = {**result, "success": False, "changed": bool(deleted), "retryable": False}
+                error_message = f"{spec.context}: ND did not confirm removal of every requested switch"
+
         self.results.action = spec.action
         self.results.operation_type = spec.op_type
+        self.results.path_current = spec.endpoint.path
+        self.results.verb_current = HttpVerbEnum(spec.endpoint.verb)
+        self.results.payload_current = mask_password(spec.payload)
+        self.results.verbosity_level_current = spec.verbosity_level
         self.results.response_current = response
         self.results.result_current = result
-        self.results.diff_current = spec.diff if spec.diff is not None else spec.payload
+        self.results.diff_current = mask_password(diff)
         self.results.register_api_call()
 
         if not result.get("success"):
-            msg = f"{spec.context} failed: {response}" if spec.context else f"API call failed: {response}"
+            msg = error_message or (f"{spec.context} failed: {response}" if spec.context else f"API call failed: {response}")
             self.log.error(msg)
-            self.nd.module.fail_json(msg=msg)
+            self.results.build_final_result()
+            self.nd.module.fail_json(msg=msg, **self.results.final_result)
 
         return response
 
