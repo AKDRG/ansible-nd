@@ -33,7 +33,7 @@
         vlan_id: "{{ nd_network_base_vlan + 242 }}"
         vlan_name: ans_nd_net_mcfg_mrg_res
         deploy: false
-        deploy_type: network
+        deploy_type: switch
         child_fabric_config:
           - fabric_name: "{{ nd_network_mcfg_child_fabric }}"
     nd_network_mcfg_merged_deploy_config:
@@ -52,7 +52,7 @@
         vlan_id: "{{ nd_network_base_vlan + 242 }}"
         vlan_name: ans_nd_net_mcfg_mrg_res
         deploy: true
-        deploy_type: network
+        deploy_type: switch
         child_fabric_config:
           - fabric_name: "{{ nd_network_mcfg_child_fabric }}"
   delegate_to: localhost
@@ -114,7 +114,7 @@
     - mcfg
     - merged
 
-- name: MCFG Merged TC2 - Deploy Parent Once With Mixed Deploy Types
+- name: MCFG Merged TC2 - Deploy Network Attachments
   cisco.nd.nd_manage_networks: &mcfg_merged_deploy_conf
     fabric_name: "{{ target_fabric }}"
     state: merged

@@ -6,6 +6,7 @@ nd_network_standalone_fabric: "{{ ansible_it_fabric | default(nd_test_fabric_nam
 nd_network_standalone_switch: "{{ ansible_switch1 | default(nd_test_switch_ip | default('')) }}"
 nd_network_standalone_switch2: "{{ ansible_switch2 | default('') }}"
 nd_network_standalone_interface: "{{ ansible_network_interface1 | default('') }}"
+nd_network_standalone_interface_mode: trunk
 nd_network_standalone_interface2: "{{ ansible_network_interface2 | default(nd_network_standalone_interface) }}"
 
 nd_network_msd_parent_fabric: "{{ ansible_msd_parent_fabric | default('') }}"
@@ -36,3 +37,15 @@ nd_network_run_mcfg_attach: "{{ nd_network_mcfg_switch | length > 0 and nd_netwo
 
 nd_network_base_id: 901000
 nd_network_base_vlan: 3100
+
+nd_network_run_pvlan: false
+nd_network_run_properties: false
+nd_network_property_features: [general]
+nd_network_property_case_names: []
+nd_network_property_mapping_interface: "{{ ansible_network_interface3 | default(ansible_network_interface2 | default('')) }}"
+nd_network_property_mapped_interface: "{{ ansible_network_interface1 | default('') }}"
+nd_network_property_native_interface: "{{ ansible_network_interface2 | default('') }}"
+nd_network_property_interface_group: ND_IT_PORT_GROUP
+nd_network_run_attachment_options: false
+nd_network_attachment_options_gateway: 10.91.153.1/24
+nd_network_attachment_options_interfaces: []

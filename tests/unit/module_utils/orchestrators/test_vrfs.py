@@ -658,7 +658,7 @@ def test_standalone_sparse_trm_disable_clears_inherited_family_and_common_fields
                 "trmData": {
                     "ipv4Trm": True,
                     "v4RpAddress": "192.0.2.9",
-                    "v4MulticastGroup": "239.2.2.2",
+                    "v4MulticastGroup": "239.2.2.0/24",
                     "loopbackNumber": 1,
                     "l3VniMulticastGroup": "239.1.1.3",
                     "mvpnRouteTargetImport": ["65000:1"],
@@ -941,6 +941,48 @@ def test_vrf_bgp_key_type_argspec_exposes_only_manage_enum():
     assert vrf_standalone_argument_spec()["bgp_passwd_encrypt"]["choices"] == choices
     assert "bgp_passwd_encrypt" not in vrf_parent_argument_spec()
     assert _child_fabric_config_element_spec()["bgp_passwd_encrypt"]["choices"] == choices
+
+
+@pytest.mark.parametrize("group", ["224.0.0.0/4", "239.12.0.0/24", "239.12.0.1/24", "239.12.0.1/32"])
+@pytest.mark.parametrize("state", ["merged", "replaced", "overridden", "staged"])
+@pytest.mark.parametrize("is_child,is_multicluster", [(False, False), (True, False), (True, True)])
+def test_vrf_overlay_cidr_survives_input_payload_readback_and_repeat(group, state, is_child, is_multicluster):
+    config = {
+        "vrf_name": "BLUE",
+        "trm_enable": True,
+        "no_rp": True,
+        "underlay_mcast_ip": "239.1.1.1",
+        "overlay_mcast_group": group,
+    }
+    config_model = VrfChildConfigModel if is_child else VrfConfigModel
+    public = {"fabric_name": "AK-VXLAN", **config} if is_child else config
+    assert config_model.from_config(public, context={"state": state}).overlay_mcast_group == group
+    transformed = _transform(config, is_child=is_child, is_multicluster=is_multicluster, state=state)
+    proposed = VrfDataModel.from_config(transformed)
+    payload = proposed.to_payload()
+    assert payload["fabricData"]["trmData"]["v4MulticastGroup"] == group
+    assert payload["fabricData"]["trmData"]["l3VniMulticastGroup"] == "239.1.1.1"
+    assert VxlanFabricInstance(**payload["fabricData"]).to_payload()["trmData"]["v4MulticastGroup"] == group
+    observed = VrfDataModel.from_response(payload)
+    assert observed.to_gathered_config()["overlay_mcast_group"] == group
+    assert observed.get_diff(proposed, exclude_unset=state == "merged")
+
+
+@pytest.mark.parametrize("group", ["239.12.0.1", "192.0.2.0/24", "ff3e::/96", "224.0.0.0/3", "239.0.0.0/33", "invalid"])
+@pytest.mark.parametrize("model", [VrfConfigModel, VrfChildConfigModel])
+def test_vrf_overlay_rejects_missing_prefix_or_non_multicast_ranges(group, model):
+    config = {"vrf_name": "BLUE", "fabric_name": "AK-VXLAN", "overlay_mcast_group": group}
+    with pytest.raises(ValidationError, match="multicast|CIDR"):
+        model.from_config(config, context={"state": "merged"})
+    with pytest.raises(ValidationError, match="multicast|CIDR"):
+        VxlanFabricInstance(trmData={"v4MulticastGroup": group})
+
+
+@pytest.mark.parametrize("group", [None, "", "  "])
+def test_vrf_overlay_unset_values_do_not_emit_a_prefix(group):
+    model = VrfConfigModel.from_config({"vrf_name": "BLUE", "overlay_mcast_group": group}, context={"state": "merged"})
+    assert model.overlay_mcast_group is None
+    assert "v4MulticastGroup" not in VxlanFabricInstance(trmData={"v4MulticastGroup": group}).to_payload()["trmData"]
 
 
 def _transform(
@@ -1895,7 +1937,7 @@ def test_vrfs_00030_transform_all_standalone_manageable_fields():
             "rp_address": "10.254.254.1",
             "rp_loopback_id": 101,
             "underlay_mcast_ip": "239.1.1.1",
-            "overlay_mcast_group": "239.2.2.2",
+            "overlay_mcast_group": "239.2.2.0/24",
             "trm_bgw_msite": False,
             "import_mvpn_rt": ["65000:9008016"],
             "export_mvpn_rt": ["65000:9008017"],
@@ -1954,7 +1996,7 @@ def test_vrfs_00030_transform_all_standalone_manageable_fields():
     assert trm["v4RpAddress"] == "10.254.254.1"
     assert trm["loopbackNumber"] == 101
     assert trm["l3VniMulticastGroup"] == "239.1.1.1"
-    assert trm["v4MulticastGroup"] == "239.2.2.2"
+    assert trm["v4MulticastGroup"] == "239.2.2.0/24"
     assert trm["trmOnBgw"] is False
     assert trm["mvpnRouteTargetImport"] == ["65000:9008016"]
     assert trm["mvpnRouteTargetExport"] == ["65000:9008017"]

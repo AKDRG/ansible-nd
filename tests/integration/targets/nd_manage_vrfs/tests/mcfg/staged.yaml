@@ -143,7 +143,7 @@
     - staged
 
 - name: MCFG Staged - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when:
     - nd_vrf_run_mcfg | bool
     - nd_vrf_run_staged | bool
@@ -156,7 +156,7 @@
   vars:
     file: mcfg_staged_seed
     vrf_conf: "{{ nd_vrf_mcfg_staged_seed }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_mcfg | bool
     - nd_vrf_run_staged | bool
@@ -169,7 +169,7 @@
   vars:
     file: mcfg_staged_create
     vrf_conf: "{{ nd_vrf_mcfg_staged_create_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_mcfg | bool
     - nd_vrf_run_staged | bool
@@ -182,7 +182,7 @@
   vars:
     file: mcfg_staged
     vrf_conf: "{{ nd_vrf_mcfg_staged_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_mcfg | bool
     - nd_vrf_run_staged | bool

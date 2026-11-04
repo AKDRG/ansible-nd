@@ -39,14 +39,10 @@
             adv_default_routes: false
             static_default_route: false
             bgp_password: abcdef12
-            bgp_passwd_encrypt: 3
+            bgp_passwd_encrypt: 3des
       - vrf_name: ansible-nd-vrf-mcfg-sanity-b
         vrf_id: "{{ nd_vrf_base_id + 61 }}"
-        l3vni_wo_vlan: true
         vrf_description: Ansible ND VRF MCFG sanity L3VNI without VLAN
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_mcfg_child_fabric }}"
@@ -61,9 +57,6 @@
         vrf_description: Ansible ND VRF MCFG sanity replaced
         max_bgp_paths: 4
         max_ibgp_paths: 4
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_mcfg_child_fabric }}"
@@ -82,17 +75,16 @@
             adv_default_routes: false
             static_default_route: false
     nd_vrf_mcfg_sanity_delete_config:
+      - vrf_name: ansible-nd-vrf-mcfg-sanity-a
+      - vrf_name: ansible-nd-vrf-mcfg-sanity-b
       - vrf_name: ansible-nd-vrf-mcfg-sanity-c
-        child_fabric_config:
-          - fabric_name: "{{ nd_vrf_mcfg_child_fabric }}"
-            adv_host_routes: true
   delegate_to: localhost
   tags:
     - mcfg
     - sanity
 
 - name: MCFG Sanity - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -102,7 +94,7 @@
   vars:
     file: mcfg_sanity_merge
     vrf_conf: "{{ nd_vrf_mcfg_sanity_merge_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -112,7 +104,7 @@
   vars:
     file: mcfg_sanity_replace
     vrf_conf: "{{ nd_vrf_mcfg_sanity_replace_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -122,7 +114,7 @@
   vars:
     file: mcfg_sanity_override
     vrf_conf: "{{ nd_vrf_mcfg_sanity_override_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -132,7 +124,7 @@
   vars:
     file: mcfg_sanity_delete
     vrf_conf: "{{ nd_vrf_mcfg_sanity_delete_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -269,7 +261,7 @@
     config: "{{ nd_vrf_mcfg_sanity_override_conf }}"
     output_level: debug
   register: mcfg_sanity_overridden
-  when: nd_vrf_run_mcfg | bool
+  when: nd_vrf_run_mcfg | bool and nd_vrf_run_overridden | bool
   tags:
     - mcfg
     - sanity
@@ -280,7 +272,7 @@
     state: gathered
     config: []
   register: mcfg_sanity_overridden_gathered
-  when: nd_vrf_run_mcfg | bool
+  when: nd_vrf_run_mcfg | bool and nd_vrf_run_overridden | bool
   tags:
     - mcfg
     - sanity
@@ -294,7 +286,7 @@
         vlan_id: "{{ nd_vrf_base_vlan + 62 }}"
         vrf_description: Ansible ND VRF MCFG sanity overridden
     changed: "{{ mcfg_sanity_overridden.changed }}"
-  when: nd_vrf_run_mcfg | bool
+  when: nd_vrf_run_mcfg | bool and nd_vrf_run_overridden | bool
   tags:
     - mcfg
     - sanity
@@ -306,7 +298,7 @@
       - vrf_name: ansible-nd-vrf-mcfg-sanity-a
       - vrf_name: ansible-nd-vrf-mcfg-sanity-b
     present: false
-  when: nd_vrf_run_mcfg | bool
+  when: nd_vrf_run_mcfg | bool and nd_vrf_run_overridden | bool
   tags:
     - mcfg
     - sanity
@@ -314,7 +306,7 @@
 - name: MCFG Sanity TC3 - Overridden Idempotence
   cisco.nd.nd_manage_vrfs: *mcfg_sanity_override
   register: mcfg_sanity_overridden_idempotent
-  when: nd_vrf_run_mcfg | bool
+  when: nd_vrf_run_mcfg | bool and nd_vrf_run_overridden | bool
   tags:
     - mcfg
     - sanity
@@ -323,7 +315,7 @@
   ansible.builtin.assert:
     that:
       - mcfg_sanity_overridden_idempotent.changed == false
-  when: nd_vrf_run_mcfg | bool
+  when: nd_vrf_run_mcfg | bool and nd_vrf_run_overridden | bool
   tags:
     - mcfg
     - sanity

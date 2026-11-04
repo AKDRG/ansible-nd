@@ -1,0 +1,31 @@
+---
+- name: PVLAN - Standalone Tests
+  block:
+    - name: PVLAN - Select Standalone Test Scope
+      ansible.builtin.set_fact:
+        target_fabric: "{{ nd_network_standalone_fabric }}"
+        nd_network_pvlan_prefix: ansible-nd-net-pvlan
+        nd_network_pvlan_offset: 150
+        nd_network_pvlan_member_names: []
+
+    - name: PVLAN - Read Standalone Fabric Prerequisites
+      cisco.nd.nd_rest:
+        path: "/api/v1/manage/fabrics/{{ target_fabric | urlencode }}"
+        method: get
+      register: nd_network_pvlan_fabric
+
+    - name: PVLAN - Require Enabled Data Center VXLAN Fabric
+      ansible.builtin.assert:
+        that:
+          - nd_network_pvlan_fabric.jsondata.management.type in ['vxlanIbgp', 'vxlanEbgp']
+          - nd_network_pvlan_fabric.jsondata.management.privateVlan | default(false) is sameas true
+        fail_msg: "PVLAN tests require a Data Center VXLAN fabric with private VLAN already enabled."
+
+    - name: PVLAN - Run Standalone Definition Tests
+      ansible.builtin.import_tasks: ../../tasks/pvlan_tasks.yaml
+  when:
+    - nd_network_run_standalone | bool
+    - nd_network_run_pvlan | bool
+  tags:
+    - standalone
+    - pvlan

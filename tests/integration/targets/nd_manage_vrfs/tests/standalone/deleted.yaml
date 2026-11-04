@@ -37,7 +37,7 @@
   tags: deleted
 
 - name: Deleted - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_standalone | bool
   tags: deleted
 
@@ -45,7 +45,7 @@
   vars:
     file: standalone_delete_seed
     vrf_conf: "{{ nd_vrf_delete_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: deleted
 
@@ -53,7 +53,7 @@
   vars:
     file: standalone_delete
     vrf_conf: "{{ nd_vrf_delete_request }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: deleted
 

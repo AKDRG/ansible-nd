@@ -38,7 +38,7 @@
             'vlan_id': nd_network_base_vlan + 1,
             'interfaces': [
               {
-                'mode': 'access',
+                'mode': nd_network_standalone_interface_mode,
                 'interface_range': nd_network_standalone_interface
               }
             ],
@@ -54,7 +54,7 @@
             'vlan_id': nd_network_base_vlan + 1,
             'interfaces': [
               {
-                'mode': 'access',
+                'mode': nd_network_standalone_interface_mode,
                 'interface_range': nd_network_standalone_interface
               }
             ],
@@ -106,7 +106,7 @@
         routing_tag: 12345
         netflow_enable: false
         deploy: true
-        deploy_type: network
+        deploy_type: switch
   delegate_to: localhost
   tags: merged
 
@@ -219,4 +219,210 @@
     that:
       - merged_deploy_idempotent.changed == false
   when: nd_network_run_standalone | bool
+  tags: merged
+
+- name: Merged TC5 - Structured Attachment Options
+  block:
+    - name: Attachment Options - Require Existing VRF and Test Switch
+      ansible.builtin.assert:
+        that:
+          - nd_network_l3_vrf_name | length > 0
+          - nd_network_standalone_switch | length > 0
+        fail_msg: "Set an existing test VRF and standalone switch before enabling attachment-option tests."
+
+    - name: Attachment Options - Read Switch Inventory Once
+      cisco.nd.nd_rest:
+        path: "/api/v1/manage/fabrics/{{ nd_network_standalone_fabric | urlencode }}/switches?max=10000&offset=0"
+        method: get
+      register: nd_network_attachment_switches
+
+    - name: Attachment Options - Select Test Switch
+      ansible.builtin.set_fact:
+        nd_network_attachment_switch_matches: >-
+          {{ nd_network_attachment_switches.jsondata.switches
+             | selectattr('fabricManagementIp', 'equalto', nd_network_standalone_switch) | list }}
+        nd_network_attachment_inventory_meta: >-
+          {{ nd_network_attachment_switches.jsondata.get('meta') or
+             nd_network_attachment_switches.jsondata.get('metadata') or {} }}
+
+    - name: Attachment Options - Require Complete Inventory and One Test Switch
+      ansible.builtin.assert:
+        that:
+          - nd_network_attachment_switch_matches | length == 1
+          - >-
+            nd_network_attachment_inventory_meta.get('counts', nd_network_attachment_inventory_meta).get('remaining', 0) | int == 0
+          - >-
+            nd_network_attachment_inventory_meta.get('counts', nd_network_attachment_inventory_meta).get(
+              'total', nd_network_attachment_switches.jsondata.switches | length) | int <=
+            nd_network_attachment_switches.jsondata.switches | length
+
+    - name: Attachment Options - Build L3 Fixture and Sparse Update
+      ansible.builtin.set_fact:
+        nd_network_attachment_switch_id: "{{ nd_network_attachment_switch_matches[0].switchId }}"
+        nd_network_attachment_config:
+          - network_name: ansible-nd-net-attachment-options
+            network_id: "{{ nd_network_base_id | int + 153 }}"
+            vlan_id: "{{ nd_network_base_vlan | int + 153 }}"
+            layer: layer3
+            vrf_name: "{{ nd_network_l3_vrf_name }}"
+            gateway_ipv4_address: "{{ nd_network_attachment_options_gateway }}"
+            deploy: false
+            attach:
+              - ip_address: "{{ nd_network_standalone_switch }}"
+                interfaces: "{{ nd_network_attachment_options_interfaces }}"
+                vlan_id: "{{ nd_network_base_vlan | int + 153 }}"
+                attachment_options:
+                  svi_enabled: true
+                  switch_route_target_import: ['65000:903']
+                  switch_route_target_export: ['65000:904']
+                freeform_config: "! ansible-nd attachment-options"
+                deploy: false
+        nd_network_attachment_update_config:
+          - network_name: ansible-nd-net-attachment-options
+            deploy: false
+            attach:
+              - ip_address: "{{ nd_network_standalone_switch }}"
+                attachment_options:
+                  svi_enabled: false
+                  switch_route_target_import: []
+                  switch_route_target_export: []
+                freeform_config: ''
+                deploy: false
+        nd_network_attachment_gather_config:
+          - network_name: ansible-nd-net-attachment-options
+            deploy: false
+      delegate_to: localhost
+
+    - name: Attachment Options - Prepare Initial Configuration
+      vars:
+        file: standalone_merged_attachment
+        network_conf: "{{ nd_network_attachment_config }}"
+      ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
+
+    - name: Attachment Options - Prepare Update Configuration
+      vars:
+        file: standalone_merged_attachment_update
+        network_conf: "{{ nd_network_attachment_update_config }}"
+      ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
+
+    - name: Attachment Options - Prepare Gather Configuration
+      vars:
+        file: standalone_merged_attachment_gather
+        network_conf: "{{ nd_network_attachment_gather_config }}"
+      ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
+
+    - name: Attachment Options - Gather Fixture Name Before Creation
+      cisco.nd.nd_manage_networks:
+        fabric_name: "{{ nd_network_standalone_fabric }}"
+        state: gathered
+        config: "{{ nd_network_standalone_merged_attachment_gather_conf }}"
+      register: nd_network_attachment_before
+
+    - name: Attachment Options - Refuse Existing Fixture Name
+      ansible.builtin.assert:
+        that:
+          - nd_network_attachment_before.gathered | selectattr('network_name', 'equalto', 'ansible-nd-net-attachment-options') | list | length == 0
+        fail_msg: "The attachment fixture already exists; it will not be changed or deleted."
+
+    - name: Attachment Options - Verify Attachment Lifecycle
+      block:
+        - name: Attachment Options - Create and Attach L3 Network
+          cisco.nd.nd_manage_networks: &merged_attachment_conf
+            fabric_name: "{{ nd_network_standalone_fabric }}"
+            state: merged
+            config: "{{ nd_network_standalone_merged_attachment_conf }}"
+            output_level: debug
+          register: nd_network_attachment_create
+
+        - name: Attachment Options - Require Actual Creation
+          ansible.builtin.assert:
+            that:
+              - nd_network_attachment_create.changed
+
+        - name: Attachment Options - Verify Initial Controller Values
+          ansible.builtin.include_tasks: ../../tasks/attachment_options_readback_tasks.yaml
+          vars:
+            nd_network_expected_svi: true
+            nd_network_expected_rt_import: ['65000:903']
+            nd_network_expected_rt_export: ['65000:904']
+            nd_network_expected_freeform: "! ansible-nd attachment-options"
+
+        - name: Attachment Options - Save Initial Port Bindings
+          ansible.builtin.set_fact:
+            nd_network_attachment_initial_interfaces: "{{ nd_network_attachment_rows[0].interfaces }}"
+
+        - name: Attachment Options - Repeat Initial Attachment in Normal and Check Mode
+          cisco.nd.nd_manage_networks: *merged_attachment_conf
+          check_mode: "{{ item }}"
+          loop: [false, true]
+          register: nd_network_attachment_initial_repeats
+
+        - name: Attachment Options - Assert Initial Idempotence
+          ansible.builtin.assert:
+            that:
+              - not item.changed
+          loop: "{{ nd_network_attachment_initial_repeats.results }}"
+          loop_control:
+            label: "check_mode={{ item.item }}"
+
+        - name: Attachment Options - Apply False and Empty Values Without Interfaces
+          cisco.nd.nd_manage_networks: &merged_attachment_update_conf
+            fabric_name: "{{ nd_network_standalone_fabric }}"
+            state: merged
+            config: "{{ nd_network_standalone_merged_attachment_update_conf }}"
+            output_level: debug
+          register: nd_network_attachment_update
+
+        - name: Attachment Options - Require Actual Update
+          ansible.builtin.assert:
+            that:
+              - nd_network_attachment_update.changed
+
+        - name: Attachment Options - Verify Cleared Controller Values
+          ansible.builtin.include_tasks: ../../tasks/attachment_options_readback_tasks.yaml
+          vars:
+            nd_network_expected_svi: false
+            nd_network_expected_rt_import: []
+            nd_network_expected_rt_export: []
+            nd_network_expected_freeform: ''
+
+        - name: Attachment Options - Assert Omitted Interfaces Preserve Bindings
+          ansible.builtin.assert:
+            that:
+              - nd_network_attachment_rows[0].interfaces == nd_network_attachment_initial_interfaces
+
+        - name: Attachment Options - Repeat Sparse Update in Normal and Check Mode
+          cisco.nd.nd_manage_networks: *merged_attachment_update_conf
+          check_mode: "{{ item }}"
+          loop: [false, true]
+          register: nd_network_attachment_update_repeats
+
+        - name: Attachment Options - Assert Sparse Update Idempotence
+          ansible.builtin.assert:
+            that:
+              - not item.changed
+          loop: "{{ nd_network_attachment_update_repeats.results }}"
+          loop_control:
+            label: "check_mode={{ item.item }}"
+      always:
+        - name: Attachment Options - Remove Only Test Network
+          cisco.nd.nd_manage_networks:
+            fabric_name: "{{ nd_network_standalone_fabric }}"
+            state: deleted
+            config: "{{ nd_network_standalone_merged_attachment_gather_conf }}"
+
+        - name: Attachment Options - Gather After Cleanup
+          cisco.nd.nd_manage_networks:
+            fabric_name: "{{ nd_network_standalone_fabric }}"
+            state: gathered
+            config: "{{ nd_network_standalone_merged_attachment_gather_conf }}"
+          register: nd_network_attachment_after
+
+        - name: Attachment Options - Assert Fixture Removal
+          ansible.builtin.assert:
+            that:
+              - nd_network_attachment_after.gathered | selectattr('network_name', 'equalto', 'ansible-nd-net-attachment-options') | list | length == 0
+  when:
+    - nd_network_run_standalone | bool
+    - nd_network_run_attachment_options | bool
   tags: merged

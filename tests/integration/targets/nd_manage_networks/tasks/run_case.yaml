@@ -1,0 +1,13 @@
+---
+- name: Reset Network Case Cleanup Scope
+  ansible.builtin.set_fact:
+    target_fabric: ''
+    target_network_delete_config: []
+
+- name: Run Network Case With Scoped Cleanup
+  block:
+    - name: Execute Selected Network Test
+      ansible.builtin.include_tasks: "{{ nd_network_test_case_to_run }}"
+  always:
+    - name: Clean Up Only This Case's Networks
+      ansible.builtin.include_tasks: setup.yaml

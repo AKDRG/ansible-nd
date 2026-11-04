@@ -39,7 +39,7 @@
     - deleted
 
 - name: MCFG Deleted - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -49,7 +49,7 @@
   vars:
     file: mcfg_delete
     vrf_conf: "{{ nd_vrf_mcfg_delete_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg

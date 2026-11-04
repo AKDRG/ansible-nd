@@ -1,0 +1,32 @@
+---
+- name: Properties - Query Interface Binding Readback
+  cisco.nd.nd_rest:
+    path: "/api/v1/manage/fabrics/{{ target_fabric | urlencode }}/networkAttachments/query?includeAll=true&max=10000&offset=0"
+    method: post
+    content: {networkNames: ["{{ nd_network_property_identity.network_name }}"]}
+  changed_when: false
+  register: nd_network_property_bindings
+
+- name: Properties - Select Active Interface Binding
+  ansible.builtin.set_fact:
+    nd_network_property_active_bindings: >-
+      {{ nd_network_property_bindings.jsondata.attachments |
+         selectattr('networkName', 'equalto', nd_network_property_identity.network_name) |
+         selectattr('attach', 'equalto', true) | list }}
+
+- name: Properties - Assert Interface and Mapping Readback
+  ansible.builtin.assert:
+    that:
+      - nd_network_property_active_bindings | length == 1
+      - nd_network_property_active_bindings[0].interfaces | length == 1
+      - nd_network_property_active_bindings[0].interfaces[0].mode == 'trunk'
+      - nd_network_property_active_bindings[0].interfaces[0].nativeVlan | default(false) == network_property_case.core.attach[0].interfaces[0].native_vlan
+      - >-
+        nd_network_property_active_bindings[0].interfaces[0].mapping.mappingType | default('none') ==
+        network_property_case.core.attach[0].interfaces[0].mapping_type
+      - >-
+        network_property_case.core.attach[0].interfaces[0].mapping_type != 'single' or
+        nd_network_property_active_bindings[0].interfaces[0].mapping.customerVlan == network_property_case.core.attach[0].interfaces[0].customer_vlan
+      - >-
+        network_property_case.core.attach[0].interfaces[0].interface_group_name is not defined or
+        nd_network_property_active_bindings[0].interfaces[0].interfaceGroupName == network_property_case.core.attach[0].interfaces[0].interface_group_name

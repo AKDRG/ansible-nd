@@ -1,0 +1,67 @@
+---
+- name: Attachment VLAN - Build Explicit Definition With Omitted Binding VLAN
+  ansible.builtin.set_fact:
+    target_network_delete_config: [{network_name: ndnet-attachment-vlan}]
+    nd_network_attachment_vlan_config:
+      - network_name: ndnet-attachment-vlan
+        network_id: "{{ nd_network_base_id | int + 354 }}"
+        vlan_id: "{{ nd_network_base_vlan | int + 354 }}"
+        layer: layer2
+        deploy: false
+        attach:
+          - ip_address: "{{ nd_network_attachment_vlan_switch }}"
+            deploy: false
+            interfaces:
+              - mode: trunk
+                interface_range: "{{ nd_network_attachment_vlan_interface }}"
+
+- name: Attachment VLAN - Prepare Configuration
+  ansible.builtin.import_tasks: conf_prep_tasks.yaml
+  vars:
+    file: attachment_vlan
+    network_conf: "{{ nd_network_attachment_vlan_config }}"
+
+- name: Attachment VLAN - Create and Attach Without Restating Definition VLAN
+  cisco.nd.nd_manage_networks: &attachment_vlan_args
+    fabric_name: "{{ target_fabric }}"
+    state: merged
+    config: "{{ nd_network_attachment_vlan_conf }}"
+    output_level: debug
+  register: nd_network_attachment_vlan_create
+
+- name: Attachment VLAN - Require Successful Creation
+  ansible.builtin.assert:
+    that: [nd_network_attachment_vlan_create.changed]
+
+- name: Attachment VLAN - Read Assigned VLAN and Port Bindings
+  cisco.nd.nd_rest:
+    path: "/api/v1/manage/fabrics/{{ target_fabric }}/networkAttachments/query?includeAll=true&max=10000&offset=0"
+    method: post
+    content:
+      networkNames: "{{ nd_network_attachment_vlan_conf | map(attribute='network_name') | list }}"
+  changed_when: false
+  register: nd_network_attachment_vlan_readback
+
+- name: Attachment VLAN - Select Active Binding
+  ansible.builtin.set_fact:
+    nd_network_attachment_vlan_rows: "{{ nd_network_attachment_vlan_readback.jsondata.attachments | selectattr('attach', 'equalto', true) | list }}"
+
+- name: Attachment VLAN - Assert Definition VLAN Was Inherited
+  ansible.builtin.assert:
+    that:
+      - nd_network_attachment_vlan_rows | length == 1
+      - nd_network_attachment_vlan_rows[0].vlanId | int == nd_network_attachment_vlan_conf[0].vlan_id | int
+      - nd_network_attachment_vlan_rows[0].interfaces | length == 1
+      - nd_network_attachment_vlan_rows[0].interfaces[0].interfaceRange == nd_network_attachment_vlan_interface
+      - nd_network_attachment_vlan_rows[0].interfaces[0].mode == 'trunk'
+
+- name: Attachment VLAN - Repeat in Normal and Check Mode
+  cisco.nd.nd_manage_networks: *attachment_vlan_args
+  check_mode: "{{ item }}"
+  loop: [false, true]
+  register: nd_network_attachment_vlan_repeats
+
+- name: Attachment VLAN - Assert Repeat Idempotence
+  ansible.builtin.assert:
+    that: [not item.changed]
+  loop: "{{ nd_network_attachment_vlan_repeats.results }}"

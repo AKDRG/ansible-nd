@@ -1,0 +1,45 @@
+---
+- name: Attachment Options - Read VRF Controller Bindings
+  cisco.nd.nd_rest:
+    path: "/api/v1/manage/fabrics/{{ target_fabric | urlencode }}/vrfAttachments/query?includeAll=true&max=10000&offset=0"
+    method: post
+    content:
+      vrfNames: ["{{ nd_vrf_attachment_config.vrf_name }}"]
+  changed_when: false
+  register: nd_vrf_attachment_query
+
+- name: Attachment Options - Select Active VRF Binding
+  ansible.builtin.set_fact:
+    nd_vrf_attachment_rows: >-
+      {{ nd_vrf_attachment_query.jsondata.attachments |
+         selectattr('vrfName', 'equalto', nd_vrf_attachment_config.vrf_name) |
+         selectattr('attach', 'equalto', true) | list }}
+
+- name: Attachment Options - Assert Expected VRF Binding Count
+  ansible.builtin.assert:
+    that:
+      - nd_vrf_attachment_rows | length == nd_vrf_attachment_config.attach | length
+
+- name: Attachment Options - Verify Every Supplied VRF Instance Value
+  ansible.builtin.assert:
+    that:
+      - nd_vrf_attachment_rows[0].instanceValues[nd_vrf_attachment_api_fields[item.key]] == item.value
+  vars:
+    nd_vrf_attachment_api_fields:
+      loopback_id: loopbackId
+      loopback_ipv4_address: loopbackIpv4Address
+      loopback_ipv6_address: loopbackIpv6Address
+      import_vpn_rt: routeTargetImport
+      export_vpn_rt: routeTargetExport
+      import_evpn_rt: evpnRouteTargetImport
+      export_evpn_rt: evpnRouteTargetExport
+  loop: "{{ nd_vrf_attachment_config.attach[0].attachment_options | dict2items }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when: nd_vrf_attachment_rows | length == 1
+
+- name: Attachment Options - Verify VRF Freeform Text
+  ansible.builtin.assert:
+    that:
+      - nd_vrf_attachment_rows[0].extraConfig | default('') | trim == nd_vrf_attachment_config.attach[0].freeform_config | trim
+  when: nd_vrf_attachment_rows | length == 1

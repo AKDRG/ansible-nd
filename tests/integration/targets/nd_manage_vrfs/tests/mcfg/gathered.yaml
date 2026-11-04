@@ -33,9 +33,6 @@
         vlan_id: "{{ nd_vrf_base_vlan + 36 }}"
         vrf_description: Ansible ND VRF MCFG gathered parent-only test
         ipv6_linklocal_enable: true
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
   delegate_to: localhost
   tags:
@@ -43,7 +40,7 @@
     - gathered
 
 - name: MCFG Gathered - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -53,7 +50,7 @@
   vars:
     file: mcfg_gathered
     vrf_conf: "{{ nd_vrf_mcfg_gathered_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg

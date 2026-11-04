@@ -57,7 +57,7 @@
   tags: overridden
 
 - name: Overridden - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when:
     - nd_vrf_run_standalone | bool
     - nd_vrf_run_overridden | bool
@@ -67,7 +67,7 @@
   vars:
     file: standalone_over_seed
     vrf_conf: "{{ nd_vrf_overridden_seed }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_standalone | bool
     - nd_vrf_run_overridden | bool
@@ -77,7 +77,7 @@
   vars:
     file: standalone_over
     vrf_conf: "{{ nd_vrf_overridden_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_standalone | bool
     - nd_vrf_run_overridden | bool

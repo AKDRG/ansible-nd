@@ -9,10 +9,20 @@
 
 - name: Build List of ND VRF Test Items
   ansible.builtin.set_fact:
-    nd_vrf_test_items: "{{ nd_vrf_testcases.files | map(attribute='path') | list }}"
+    nd_vrf_test_items: "{{ nd_vrf_testcases.files | map(attribute='path') | sort | list }}"
 
 - name: Run ND VRF Test Cases
-  ansible.builtin.include_tasks: "{{ nd_vrf_test_case_to_run }}"
+  ansible.builtin.include_tasks: run_case.yaml
+  vars:
+    nd_vrf_case_topology: "{{ nd_vrf_test_case_to_run | dirname | basename }}"
+    nd_vrf_case_state: "{{ nd_vrf_test_case_to_run | basename | splitext | first }}"
   with_items: "{{ nd_vrf_test_items }}"
   loop_control:
     loop_var: nd_vrf_test_case_to_run
+  when:
+    - lookup('ansible.builtin.vars', 'nd_vrf_run_' + nd_vrf_case_topology) | bool
+    - nd_vrf_case_state != 'properties' or nd_vrf_run_properties | bool
+    - nd_vrf_case_state != 'overridden' or nd_vrf_run_overridden | bool
+    - >-
+      nd_vrf_case_state != 'staged' or
+      (nd_vrf_run_staged | bool and lookup('ansible.builtin.vars', 'nd_vrf_' + nd_vrf_case_topology + '_switch') | length > 0)

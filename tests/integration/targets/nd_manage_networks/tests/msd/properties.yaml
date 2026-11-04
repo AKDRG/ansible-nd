@@ -1,0 +1,13 @@
+---
+- name: Properties - Select Fabric Group Network Scope
+  ansible.builtin.set_fact:
+    target_fabric: "{{ nd_network_msd_parent_fabric }}"
+    nd_network_properties_child: "{{ nd_network_msd_child_fabric }}"
+    nd_network_properties_prefix: ansible-nd-net-msd-properties
+  when: nd_network_run_msd | bool
+
+- name: Properties - Exercise Parent and Child Network Fields
+  ansible.builtin.import_tasks: ../../tasks/properties_tasks.yaml
+  when:
+    - nd_network_run_msd | bool
+    - nd_network_run_properties | bool

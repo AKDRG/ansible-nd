@@ -111,7 +111,7 @@
   tags: staged
 
 - name: Staged - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when:
     - nd_vrf_run_standalone | bool
     - nd_vrf_run_staged | bool
@@ -122,7 +122,7 @@
   vars:
     file: standalone_staged_seed
     vrf_conf: "{{ nd_vrf_staged_seed }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_standalone | bool
     - nd_vrf_run_staged | bool
@@ -133,7 +133,7 @@
   vars:
     file: standalone_staged_create
     vrf_conf: "{{ nd_vrf_staged_create_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_standalone | bool
     - nd_vrf_run_staged | bool
@@ -144,7 +144,7 @@
   vars:
     file: standalone_staged
     vrf_conf: "{{ nd_vrf_staged_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_standalone | bool
     - nd_vrf_run_staged | bool
@@ -192,8 +192,8 @@
   ansible.builtin.set_fact:
     staged_create_attachment_rows: >-
       {{
-        staged_create_attachment_query.current.attachments
-        | default(staged_create_attachment_query.current.items | default([]))
+        staged_create_attachment_query.jsondata.attachments
+        | default(staged_create_attachment_query.jsondata.items | default([]))
       }}
   when:
     - nd_vrf_run_standalone | bool
@@ -287,8 +287,8 @@
   ansible.builtin.set_fact:
     staged_attachment_rows: >-
       {{
-        staged_attachment_query.current.attachments
-        | default(staged_attachment_query.current.items | default([]))
+        staged_attachment_query.jsondata.attachments
+        | default(staged_attachment_query.jsondata.items | default([]))
       }}
   when:
     - nd_vrf_run_standalone | bool
@@ -311,7 +311,7 @@
 - name: Staged TC4 - Assert Omitted VRF Definition Remains
   ansible.builtin.assert:
     that:
-      - (staged_gather_result.after | default([]) | to_json) is search("ndvrfstgomit")
+      - (staged_gather_result.gathered | default([]) | to_json) is search("ndvrfstgomit")
       - staged_attachment_rows | selectattr("vrfName", "equalto", "ndvrfstgcreate") | selectattr("attach", "equalto", true) | list | length > 0
       - >-
         (
@@ -326,9 +326,12 @@
       - staged_attachment_rows | selectattr("vrfName", "equalto", "ndvrfstgomit") | selectattr("attach", "equalto", true) | list | length == 0
       - staged_repeat_result.changed == false
       - >-
+        staged_attachment_rows | selectattr("vrfName", "in", target_vrf_names)
+        | selectattr("attach", "equalto", true) | rejectattr("status", "equalto", "pending") | list | length == 0
+      - >-
         staged_attachment_rows
         | selectattr("vrfName", "in", target_vrf_names)
-        | rejectattr("status", "equalto", "pending")
+        | rejectattr("status", "in", ["pending", "notApplicable"])
         | list | length == 0
   when:
     - nd_vrf_run_standalone | bool

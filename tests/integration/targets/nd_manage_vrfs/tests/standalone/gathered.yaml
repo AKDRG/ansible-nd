@@ -45,7 +45,7 @@
   tags: gathered
 
 - name: Gathered - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_standalone | bool
   tags: gathered
 
@@ -53,7 +53,7 @@
   vars:
     file: standalone_gathered
     vrf_conf: "{{ nd_vrf_gathered_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: gathered
 

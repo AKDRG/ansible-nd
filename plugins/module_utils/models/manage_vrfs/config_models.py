@@ -270,7 +270,7 @@ class VrfChildConfigModel(NDNestedModel):
     overlay_mcast_group: str | None = Field(
         default=None,
         alias="overlayMcastGroup",
-        description=("Overlay multicast group IPv4 address (224.0.0.0/4 range); " "requires trm_enable=True"),
+        description="Overlay IPv4 multicast group/prefix in CIDR notation within 224.0.0.0/4; requires trm_enable=True",
     )
     v6_overlay_mcast_group: str | None = Field(default=None, alias="v6MulticastGroup", description="IPv6 overlay multicast group")
     mvpn_inter_as: bool | None = Field(default=None, alias="mvpnInterAs", description="Enable MVPN inter-AS on IOS XE")
@@ -751,7 +751,7 @@ class VrfConfigModel(NDBaseModel):
     overlay_mcast_group: str | None = Field(
         default=None,
         alias="overlayMcastGroup",
-        description=("Overlay multicast group IPv4 address (224.0.0.0/4 range); " "requires trm_enable=True"),
+        description="Overlay IPv4 multicast group/prefix in CIDR notation within 224.0.0.0/4; requires trm_enable=True",
     )
     v6_overlay_mcast_group: str | None = Field(
         default=None,
@@ -1354,7 +1354,7 @@ class VrfParentConfigModel(NDBaseModel):
     overlay_mcast_group: str | None = Field(
         default=None,
         alias="overlayMcastGroup",
-        description=("Overlay multicast group IPv4 address (224.0.0.0/4 range); " "requires trm_enable=True"),
+        description="Overlay IPv4 multicast group/prefix in CIDR notation within 224.0.0.0/4; requires trm_enable=True",
     )
     trm_bgw_msite: bool = Field(
         default=False,

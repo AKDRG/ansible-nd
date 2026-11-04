@@ -32,9 +32,6 @@
           - "65000:50550"
         export_evpn_rt:
           - "65000:50550"
-        adv_host_routes: true
-        adv_default_routes: false
-        static_default_route: false
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_msd_child_fabric }}"
@@ -42,14 +39,10 @@
             adv_default_routes: false
             static_default_route: false
             bgp_password: abcdef12
-            bgp_passwd_encrypt: 3
+            bgp_passwd_encrypt: 3des
       - vrf_name: ansible-msd-sanity-b
         vrf_id: "{{ nd_vrf_base_id + 51 }}"
-        l3vni_wo_vlan: true
         vrf_description: Ansible ND VRF MSD sanity L3VNI without VLAN
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_msd_child_fabric }}"
@@ -64,9 +57,6 @@
         vrf_description: Ansible ND VRF MSD sanity replaced
         max_bgp_paths: 4
         max_ibgp_paths: 4
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_msd_child_fabric }}"
@@ -78,9 +68,6 @@
         vrf_id: "{{ nd_vrf_base_id + 52 }}"
         vlan_id: "{{ nd_vrf_base_vlan + 52 }}"
         vrf_description: Ansible ND VRF MSD sanity overridden
-        adv_host_routes: true
-        adv_default_routes: false
-        static_default_route: false
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_msd_child_fabric }}"
@@ -88,17 +75,16 @@
             adv_default_routes: false
             static_default_route: false
     nd_vrf_msd_sanity_delete_config:
+      - vrf_name: ansible-msd-sanity-a
+      - vrf_name: ansible-msd-sanity-b
       - vrf_name: ansible-msd-sanity-c
-        child_fabric_config:
-          - fabric_name: "{{ nd_vrf_msd_child_fabric }}"
-            adv_host_routes: true
   delegate_to: localhost
   tags:
     - msd
     - sanity
 
 - name: MSD Sanity - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd
@@ -108,7 +94,7 @@
   vars:
     file: msd_sanity_merge
     vrf_conf: "{{ nd_vrf_msd_sanity_merge_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd
@@ -118,7 +104,7 @@
   vars:
     file: msd_sanity_replace
     vrf_conf: "{{ nd_vrf_msd_sanity_replace_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd
@@ -128,7 +114,7 @@
   vars:
     file: msd_sanity_override
     vrf_conf: "{{ nd_vrf_msd_sanity_override_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd
@@ -138,7 +124,7 @@
   vars:
     file: msd_sanity_delete
     vrf_conf: "{{ nd_vrf_msd_sanity_delete_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd
@@ -251,7 +237,7 @@
     config: "{{ nd_vrf_msd_sanity_override_conf }}"
     output_level: debug
   register: msd_sanity_overridden
-  when: nd_vrf_run_msd | bool
+  when: nd_vrf_run_msd | bool and nd_vrf_run_overridden | bool
   tags:
     - msd
     - sanity
@@ -262,7 +248,7 @@
     state: gathered
     config: []
   register: msd_sanity_overridden_gathered
-  when: nd_vrf_run_msd | bool
+  when: nd_vrf_run_msd | bool and nd_vrf_run_overridden | bool
   tags:
     - msd
     - sanity
@@ -272,7 +258,7 @@
     nd_data: "{{ msd_sanity_overridden_gathered }}"
     test_data: "{{ nd_vrf_msd_sanity_override_conf }}"
     changed: "{{ msd_sanity_overridden.changed }}"
-  when: nd_vrf_run_msd | bool
+  when: nd_vrf_run_msd | bool and nd_vrf_run_overridden | bool
   tags:
     - msd
     - sanity
@@ -284,7 +270,7 @@
       - vrf_name: ansible-msd-sanity-a
       - vrf_name: ansible-msd-sanity-b
     present: false
-  when: nd_vrf_run_msd | bool
+  when: nd_vrf_run_msd | bool and nd_vrf_run_overridden | bool
   tags:
     - msd
     - sanity
@@ -292,7 +278,7 @@
 - name: MSD Sanity TC3 - Overridden Idempotence
   cisco.nd.nd_manage_vrfs: *msd_sanity_override
   register: msd_sanity_overridden_idempotent
-  when: nd_vrf_run_msd | bool
+  when: nd_vrf_run_msd | bool and nd_vrf_run_overridden | bool
   tags:
     - msd
     - sanity
@@ -301,7 +287,7 @@
   ansible.builtin.assert:
     that:
       - msd_sanity_overridden_idempotent.changed == false
-  when: nd_vrf_run_msd | bool
+  when: nd_vrf_run_msd | bool and nd_vrf_run_overridden | bool
   tags:
     - msd
     - sanity

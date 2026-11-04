@@ -1,0 +1,13 @@
+---
+- name: Properties - Select Standalone VRF Scope
+  ansible.builtin.set_fact:
+    target_fabric: "{{ nd_vrf_standalone_fabric }}"
+    nd_vrf_properties_child: ''
+    nd_vrf_properties_prefix: ndvrf-props
+  when: nd_vrf_run_standalone | bool
+
+- name: Properties - Exercise Standalone VRF Fields
+  ansible.builtin.import_tasks: ../../tasks/properties_tasks.yaml
+  when:
+    - nd_vrf_run_standalone | bool
+    - nd_vrf_run_properties | bool

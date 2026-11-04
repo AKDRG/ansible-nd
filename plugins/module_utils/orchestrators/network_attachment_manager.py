@@ -687,7 +687,7 @@ class NetworkAttachmentManager:
         return {
             "networkName": payload.get("networkName"),
             "switchId": payload.get("switchId"),
-            "vlanId": payload.get("vlanId", -1),
+            "vlanId": payload.get("vlanId"),
             "interfaces": payload.get("interfaces"),
             "attach": payload.get("attach", True),
         }

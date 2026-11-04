@@ -5559,7 +5559,8 @@ def test_network_workflow_coordinator_apply_attachment_phase_forwards_attachment
     assert calls == [(module_args, strategy, "post", desired, ["BLUE_NET"], current, attachment_details)]
 
 
-def test_network_attachment_post_validates_interfaces_before_attach():
+@pytest.mark.parametrize("vlan", [None, 2, 2654, 4094])
+def test_network_attachment_post_validates_interfaces_before_attach(vlan):
     calls = []
 
     class Module:
@@ -5593,6 +5594,8 @@ def test_network_attachment_post_validates_interfaces_before_attach():
             "attach": True,
         }
     ]
+    if vlan is not None:
+        payloads[0]["vlanId"] = vlan
 
     manager.post_network_attachments({}, _orchestrator().strategy, payloads, {"BLUE_NET": {"SERIAL1"}}, operation_type=OperationType.CREATE)
 
@@ -5602,7 +5605,7 @@ def test_network_attachment_post_validates_interfaces_before_attach():
             {
                 "networkName": "BLUE_NET",
                 "switchId": "SERIAL1",
-                "vlanId": -1,
+                **({"vlanId": vlan} if vlan is not None else {}),
                 "interfaces": [
                     {
                         "mode": "trunk",
@@ -5620,6 +5623,7 @@ def test_network_attachment_post_validates_interfaces_before_attach():
             {
                 "networkName": "BLUE_NET",
                 "switchId": "SERIAL1",
+                **({"vlanId": vlan} if vlan is not None else {}),
                 "interfaces": [
                     {
                         "mode": "trunk",
@@ -5659,7 +5663,6 @@ def test_network_attachment_validation_batches_only_nonempty_interfaces():
         {
             "networkName": "WITH_INTERFACE",
             "switchId": "SERIAL3",
-            "vlanId": -1,
             "interfaces": [{"mode": "access", "interfaceRange": "Ethernet1/3", "nativeVlan": False}],
             "attach": True,
         }

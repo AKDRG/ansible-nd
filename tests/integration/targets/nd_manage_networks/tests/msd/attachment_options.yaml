@@ -1,0 +1,119 @@
+---
+- name: Attachment Options - Select Fabric Group Scope
+  ansible.builtin.set_fact:
+    target_fabric: "{{ nd_network_msd_parent_fabric }}"
+    target_network_delete_config: [{network_name: ansible-nd-net-msd-att-options}]
+    nd_network_attachment_fabric: "{{ nd_network_msd_parent_fabric }}"
+    nd_network_attachment_network_name: ansible-nd-net-msd-att-options
+    nd_network_group_attachment_config:
+      - network_name: ansible-nd-net-msd-att-options
+        network_id: "{{ nd_network_base_id | int + 353 }}"
+        vlan_id: "{{ nd_network_base_vlan | int + 353 }}"
+        layer: layer3
+        vrf_name: "{{ nd_network_l3_vrf_name }}"
+        gateway_ipv4_address: 10.91.206.1/24
+        deploy: false
+        attach:
+          - ip_address: "{{ nd_network_msd_switch }}"
+            vlan_id: "{{ nd_network_base_vlan | int + 353 }}"
+            deploy: false
+            interfaces:
+              - mode: trunk
+                interface_range: "{{ nd_network_msd_interface }}"
+                native_vlan: false
+            freeform_config: '! ND integration group Network attachment'
+            attachment_options:
+              svi_enabled: true
+              switch_route_target_import: ['65000:50353']
+              switch_route_target_export: ['65000:50353']
+    nd_network_group_attachment_update:
+      - network_name: ansible-nd-net-msd-att-options
+        deploy: false
+        attach:
+          - ip_address: "{{ nd_network_msd_switch }}"
+            deploy: false
+            freeform_config: ''
+            attachment_options:
+              svi_enabled: false
+              switch_route_target_import: []
+              switch_route_target_export: []
+  when:
+    - nd_network_run_msd | bool
+    - nd_network_run_attachment_options | bool
+
+- name: Attachment Options - Exercise Fabric Group Binding Fields
+  when:
+    - nd_network_run_msd | bool
+    - nd_network_run_attachment_options | bool
+  block:
+    - name: Attachment Options - Prepare Fabric Group Configuration
+      ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
+      vars:
+        file: msd_attachment_options
+        network_conf: "{{ nd_network_group_attachment_config }}"
+
+    - name: Attachment Options - Prepare Sparse Fabric Group Update
+      ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
+      vars:
+        file: msd_attachment_options_update
+        network_conf: "{{ nd_network_group_attachment_update }}"
+
+    - name: Attachment Options - Read Child Switch Inventory
+      cisco.nd.nd_rest:
+        path: "/api/v1/manage/fabrics/{{ nd_network_msd_child_fabric | urlencode }}/switches?max=10000&offset=0"
+        method: get
+      register: nd_network_attachment_switches
+
+    - name: Attachment Options - Resolve Requested Child Switch
+      ansible.builtin.set_fact:
+        nd_network_attachment_switch_id: >-
+          {{ (nd_network_attachment_switches.jsondata.switches |
+              selectattr('fabricManagementIp', 'equalto', nd_network_msd_switch) | list | first).switchId }}
+
+    - name: Attachment Options - Create Fabric Group Network and Binding
+      cisco.nd.nd_manage_networks:
+        fabric_name: "{{ target_fabric }}"
+        state: merged
+        config: "{{ nd_network_msd_attachment_options_conf }}"
+        output_level: debug
+      register: nd_network_group_attachment_created
+
+    - name: Attachment Options - Verify Initial Fabric Group Binding
+      ansible.builtin.include_tasks: ../../tasks/attachment_options_readback_tasks.yaml
+      vars:
+        nd_network_expected_svi: true
+        nd_network_expected_rt_import: ['65000:50353']
+        nd_network_expected_rt_export: ['65000:50353']
+        nd_network_expected_freeform: '! ND integration group Network attachment'
+
+    - name: Attachment Options - Update Only Fabric Group Binding Options
+      cisco.nd.nd_manage_networks: &group_attachment_update
+        fabric_name: "{{ target_fabric }}"
+        state: merged
+        config: "{{ nd_network_msd_attachment_options_update_conf }}"
+        output_level: debug
+      register: nd_network_group_attachment_updated
+
+    - name: Attachment Options - Verify Cleared Fabric Group Options
+      ansible.builtin.include_tasks: ../../tasks/attachment_options_readback_tasks.yaml
+      vars:
+        nd_network_expected_svi: false
+        nd_network_expected_rt_import: []
+        nd_network_expected_rt_export: []
+        nd_network_expected_freeform: ''
+
+    - name: Attachment Options - Verify Omitted Interfaces Still Bound
+      ansible.builtin.assert:
+        that:
+          - nd_network_attachment_rows[0].interfaces | length > 0
+
+    - name: Attachment Options - Repeat Sparse Group Update in Normal and Check Mode
+      cisco.nd.nd_manage_networks: *group_attachment_update
+      check_mode: "{{ item }}"
+      loop: [false, true]
+      register: nd_network_group_attachment_repeats
+
+    - name: Attachment Options - Assert Group Repeat Idempotence
+      ansible.builtin.assert:
+        that: [not item.changed]
+      loop: "{{ nd_network_group_attachment_repeats.results }}"

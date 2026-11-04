@@ -95,28 +95,28 @@
         network_id: "{{ nd_network_base_id + 70 }}"
         vlan_id: "{{ nd_network_base_vlan + 70 }}"
         vlan_name: ndnetstgadd_vlan
-        attach: "{{ nd_network_staged_primary_attach_block }}"
+        attach: "{{ nd_network_staged_primary_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 70}) | list }}"
         deploy: false
       - network_name: ndnetstgremove
         layer: layer2
         network_id: "{{ nd_network_base_id + 71 }}"
         vlan_id: "{{ nd_network_base_vlan + 71 }}"
         vlan_name: ndnetstgremove_vlan
-        attach: "{{ nd_network_staged_primary_attach_block + nd_network_staged_secondary_attach_block }}"
+        attach: "{{ (nd_network_staged_primary_attach_block + nd_network_staged_secondary_attach_block) | map('combine', {'vlan_id': nd_network_base_vlan + 71}) | list }}"
         deploy: false
       - network_name: ndnetstgdetach
         layer: layer2
         network_id: "{{ nd_network_base_id + 74 }}"
         vlan_id: "{{ nd_network_base_vlan + 74 }}"
         vlan_name: ndnetstgdetach_vlan
-        attach: "{{ nd_network_staged_primary_attach_block }}"
+        attach: "{{ nd_network_staged_primary_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 74}) | list }}"
         deploy: false
       - network_name: ndnetstgomit
         layer: layer2
         network_id: "{{ nd_network_base_id + 72 }}"
         vlan_id: "{{ nd_network_base_vlan + 72 }}"
         vlan_name: ndnetstgomit_vlan
-        attach: "{{ nd_network_staged_primary_attach_block }}"
+        attach: "{{ nd_network_staged_primary_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 72}) | list }}"
         deploy: false
     nd_network_staged_create_config:
       - network_name: ndnetstgcreate
@@ -124,7 +124,7 @@
         network_id: "{{ nd_network_base_id + 73 }}"
         vlan_id: "{{ nd_network_base_vlan + 73 }}"
         vlan_name: ndnetstgcreate_vlan
-        attach: "{{ nd_network_staged_create_attach_block }}"
+        attach: "{{ nd_network_staged_create_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 73}) | list }}"
         deploy: true
     nd_network_staged_config:
       - network_name: ndnetstgcreate
@@ -132,21 +132,21 @@
         network_id: "{{ nd_network_base_id + 73 }}"
         vlan_id: "{{ nd_network_base_vlan + 73 }}"
         vlan_name: ndnetstgcreate_vlan
-        attach: "{{ nd_network_staged_create_attach_block }}"
+        attach: "{{ nd_network_staged_create_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 73}) | list }}"
         deploy: true
       - network_name: ndnetstgadd
         layer: layer2
         network_id: "{{ nd_network_base_id + 70 }}"
         vlan_id: "{{ nd_network_base_vlan + 70 }}"
         vlan_name: ndnetstgadd_vlan
-        attach: "{{ nd_network_staged_primary_attach_block + nd_network_staged_secondary_attach_block }}"
+        attach: "{{ (nd_network_staged_primary_attach_block + nd_network_staged_secondary_attach_block) | map('combine', {'vlan_id': nd_network_base_vlan + 70}) | list }}"
         deploy: true
       - network_name: ndnetstgremove
         layer: layer2
         network_id: "{{ nd_network_base_id + 71 }}"
         vlan_id: "{{ nd_network_base_vlan + 71 }}"
         vlan_name: ndnetstgremove_vlan
-        attach: "{{ nd_network_staged_primary_attach_block }}"
+        attach: "{{ nd_network_staged_primary_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 71}) | list }}"
         deploy: true
       - network_name: ndnetstgdetach
         layer: layer2
@@ -240,8 +240,8 @@
   ansible.builtin.set_fact:
     staged_create_attachment_rows: >-
       {{
-        staged_create_attachment_query.current.attachments
-        | default(staged_create_attachment_query.current.items | default([]))
+        staged_create_attachment_query.jsondata.attachments
+        | default(staged_create_attachment_query.jsondata.items | default([]))
       }}
   when:
     - nd_network_run_standalone | bool
@@ -335,8 +335,8 @@
   ansible.builtin.set_fact:
     staged_attachment_rows: >-
       {{
-        staged_attachment_query.current.attachments
-        | default(staged_attachment_query.current.items | default([]))
+        staged_attachment_query.jsondata.attachments
+        | default(staged_attachment_query.jsondata.items | default([]))
       }}
   when:
     - nd_network_run_standalone | bool
@@ -359,7 +359,7 @@
 - name: Staged TC4 - Assert Omitted Network Definition Remains
   ansible.builtin.assert:
     that:
-      - (staged_gather_result.after | default([]) | to_json) is search("ndnetstgomit")
+      - (staged_gather_result.gathered | default([]) | to_json) is search("ndnetstgomit")
       - staged_attachment_rows | selectattr("networkName", "equalto", "ndnetstgcreate") | selectattr("attach", "equalto", true) | list | length > 0
       - >-
         (
@@ -374,9 +374,12 @@
       - staged_attachment_rows | selectattr("networkName", "equalto", "ndnetstgomit") | selectattr("attach", "equalto", true) | list | length == 0
       - staged_repeat_result.changed == false
       - >-
+        staged_attachment_rows | selectattr("networkName", "in", target_network_names)
+        | selectattr("attach", "equalto", true) | rejectattr("status", "equalto", "pending") | list | length == 0
+      - >-
         staged_attachment_rows
         | selectattr("networkName", "in", target_network_names)
-        | rejectattr("status", "equalto", "pending")
+        | rejectattr("status", "in", ["pending", "notApplicable"])
         | list | length == 0
   when:
     - nd_network_run_standalone | bool

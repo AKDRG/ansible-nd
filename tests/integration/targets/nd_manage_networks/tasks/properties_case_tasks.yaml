@@ -1,0 +1,85 @@
+---
+- name: Properties - Build Network Identity and Expected Values
+  ansible.builtin.set_fact:
+    nd_network_property_identity:
+      network_name: "{{ nd_network_properties_prefix }}-{{ network_property_case.name }}"
+      network_id: "{{ nd_network_base_id | int + network_property_case.offset | int }}"
+      vlan_id: "{{ nd_network_base_vlan | int + network_property_case.offset | int }}"
+    nd_network_property_expected: "{{ network_property_case.core | combine(network_property_case.fabric) }}"
+
+- name: Properties - Retain Named Network Cleanup Scope
+  ansible.builtin.set_fact:
+    target_network_delete_config: >-
+      {{ target_network_delete_config | default([]) + [{'network_name': nd_network_property_identity.network_name}] }}
+    nd_network_property_config: >-
+      {{ [nd_network_property_identity | combine(network_property_case.core) |
+          combine(network_property_case.fabric if nd_network_properties_child | length == 0 else
+            {'child_fabric_config': [network_property_case.fabric | combine({'fabric_name': nd_network_properties_child})]}) |
+          combine({'deploy': false})] }}
+
+- name: Properties - Prepare Network Configuration
+  ansible.builtin.import_tasks: conf_prep_tasks.yaml
+  vars:
+    file: properties
+    network_conf: "{{ nd_network_property_config }}"
+
+- name: Properties - Create Network in Check Mode
+  cisco.nd.nd_manage_networks: &network_property_args
+    fabric_name: "{{ target_fabric }}"
+    state: merged
+    config: "{{ nd_network_properties_conf }}"
+    output_level: debug
+  check_mode: true
+  register: nd_network_property_preview
+
+- name: Properties - Create Network
+  cisco.nd.nd_manage_networks: *network_property_args
+  register: nd_network_property_create
+
+- name: Properties - Read Effective Network
+  cisco.nd.nd_manage_networks:
+    fabric_name: "{{ nd_network_properties_child if nd_network_properties_child | length > 0 else target_fabric }}"
+    state: gathered
+    config: [{network_name: "{{ nd_network_property_identity.network_name }}"}]
+    output_level: debug
+  register: nd_network_property_gather
+
+- name: Properties - Select Requested Network from Gathered Inventory
+  ansible.builtin.set_fact:
+    nd_network_property_records: >-
+      {{ nd_network_property_gather.gathered | selectattr('network_name', 'equalto', nd_network_property_identity.network_name) | list }}
+
+- name: Properties - Assert One Effective Network
+  ansible.builtin.assert:
+    that: [nd_network_property_records | length == 1]
+
+- name: Properties - Verify Every Requested Network Field
+  ansible.builtin.assert:
+    that:
+      - nd_network_property_records[0].get(item.key) == item.value
+    fail_msg: "Network {{ nd_network_property_identity.network_name }} did not persist {{ item.key }}."
+  loop: "{{ nd_network_property_expected | dict2items | rejectattr('key', 'equalto', 'attach') | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - nd_network_property_create is succeeded
+    - nd_network_property_records | length == 1
+
+- name: Properties - Verify Supplied Interface Fields
+  ansible.builtin.include_tasks: properties_attachment_tasks.yaml
+  when:
+    - network_property_case.core.attach is defined
+    - nd_network_property_create is succeeded
+
+- name: Properties - Repeat Network in Normal and Check Mode
+  cisco.nd.nd_manage_networks: *network_property_args
+  check_mode: "{{ item }}"
+  loop: [false, true]
+  register: nd_network_property_repeats
+
+- name: Properties - Assert Network Repeat Idempotence
+  ansible.builtin.assert:
+    that: [not item.changed]
+  loop: "{{ nd_network_property_repeats.results }}"
+  loop_control:
+    label: "check_mode={{ item.item }}"

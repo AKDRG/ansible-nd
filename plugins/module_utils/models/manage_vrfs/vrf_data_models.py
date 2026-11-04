@@ -145,7 +145,7 @@ class TrmData(NDNestedModel):
     v4_multicast_group: str | None = Field(
         default=None,
         alias="v4MulticastGroup",
-        description="Multicast group for TRMv4",
+        description="IPv4 multicast group/prefix in CIDR notation for TRMv4",
     )
     # trmV6Fields
     v6_rp_absent: bool | None = Field(
@@ -185,10 +185,15 @@ class TrmData(NDNestedModel):
     def validate_v4_rp_address(cls, v: str | None) -> str | None:
         return VrfValidators.validate_ipv4_address(v)
 
-    @field_validator("l3_vni_multicast_group", "v4_multicast_group", mode="before")
+    @field_validator("l3_vni_multicast_group", mode="before")
     @classmethod
     def validate_ipv4_fields(cls, v: str | None) -> str | None:
         return VrfValidators.validate_ipv4_address(v)
+
+    @field_validator("v4_multicast_group", mode="before")
+    @classmethod
+    def validate_v4_multicast(cls, v: str | None) -> str | None:
+        return VrfValidators.validate_overlay_mcast_group(v)
 
     @field_validator("v6_rp_address", mode="before")
     @classmethod

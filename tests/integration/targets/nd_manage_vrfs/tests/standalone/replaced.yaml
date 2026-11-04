@@ -55,7 +55,7 @@
         static_default_route: false
         trm_enable: false
         bgp_password: abcdef12
-        bgp_passwd_encrypt: 3
+        bgp_passwd_encrypt: 3des
         netflow_enable: false
         deploy: false
       - vrf_name: ansible-nd-vrf-replaced-l3vni
@@ -65,7 +65,6 @@
         loopback_route_tag: 12356
         max_bgp_paths: 2
         max_ibgp_paths: 2
-        ipv6_linklocal_enable: true
         disable_rt_auto: false
         import_vpn_rt:
           - "65000:50012"
@@ -83,7 +82,7 @@
   tags: replaced
 
 - name: Replaced - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_standalone | bool
   tags: replaced
 
@@ -91,7 +90,7 @@
   vars:
     file: standalone_replace_base
     vrf_conf: "{{ nd_vrf_replace_base }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: replaced
 
@@ -99,7 +98,7 @@
   vars:
     file: standalone_replace
     vrf_conf: "{{ nd_vrf_replace_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: replaced
 

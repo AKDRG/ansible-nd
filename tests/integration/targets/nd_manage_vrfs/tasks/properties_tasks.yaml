@@ -1,0 +1,157 @@
+---
+- name: Properties - Define VRF Field Cases
+  ansible.builtin.set_fact:
+    nd_vrf_property_cases:
+      - name: routing
+        offset: 100
+        core:
+          vrf_vlan_name: ND_IT_VRF_VLAN
+          vrf_intf_desc: ND integration SVI
+          vrf_description: ND integration description
+          vrf_int_mtu: 9000
+          loopback_route_tag: 23456
+          redist_direct_rmap: ND_IT_REDIST_V4
+          v6_redist_direct_rmap: ND_IT_REDIST_V6
+          max_bgp_paths: 4
+          max_ibgp_paths: 8
+          ipv6_linklocal_enable: false
+          disable_rt_auto: true
+          import_vpn_rt: ['65000:55100']
+          export_vpn_rt: ['65000:55101']
+          import_evpn_rt: ['65000:55102']
+          export_evpn_rt: ['65000:55103']
+        fabric:
+          bgp_best_path_relax: true
+          bgp_log_neighbor_change: true
+          bgp_allow_as_in: true
+          bgp_allow_as_in_num: 5
+          bgp_as_override: true
+          bgp_disable_peer_as_check: true
+          bgp_soft_reconfig_always: true
+          adv_host_routes: true
+          adv_default_routes: false
+          static_default_route: false
+      - name: bgp-3des
+        offset: 101
+        core: {}
+        fabric: {bgp_password: abcdef12, bgp_passwd_encrypt: 3des}
+      - name: bgp-type6
+        offset: 102
+        core: {}
+        fabric: {bgp_password: abcdef12, bgp_passwd_encrypt: type6}
+      - name: bgp-type7
+        offset: 103
+        core: {}
+        fabric: {bgp_password: abcdef12, bgp_passwd_encrypt: type7}
+      - name: trm-v4-internal
+        offset: 104
+        requires: trm
+        core: {}
+        fabric:
+          trm_enable: true
+          no_rp: false
+          rp_external: false
+          rp_address: 10.255.224.1
+          rp_loopback_id: 224
+          underlay_mcast_ip: 239.2.1.104
+          import_mvpn_rt: ['65000:55104']
+          export_mvpn_rt: ['65000:55104']
+      - name: trm-v4-external
+        offset: 105
+        requires: trm
+        core: {}
+        fabric:
+          trm_enable: true
+          no_rp: false
+          rp_external: true
+          rp_address: 10.255.225.1
+          underlay_mcast_ip: 239.2.1.105
+      - name: trm-v4-ssm
+        offset: 106
+        requires: trm
+        core: {}
+        fabric: {trm_enable: true, no_rp: true, underlay_mcast_ip: 239.2.1.106}
+      - name: trm-v6-internal
+        offset: 107
+        requires: trm
+        core: {}
+        fabric:
+          ipv6_trm: true
+          v6_no_rp: false
+          v6_rp_external: false
+          v6_rp_address: 2001:db8:227::1
+          rp_loopback_id: 227
+          underlay_mcast_ip: 239.2.1.107
+          v6_overlay_mcast_group: ff3e::/96
+          import_mvpn_rt: ['65000:55107']
+          export_mvpn_rt: ['65000:55107']
+      - name: trm-v6-external
+        offset: 108
+        requires: trm
+        core: {}
+        fabric:
+          ipv6_trm: true
+          v6_no_rp: false
+          v6_rp_external: true
+          v6_rp_address: 2001:db8:228::1
+          underlay_mcast_ip: 239.2.1.108
+          v6_overlay_mcast_group: ff3f::/96
+      - name: trm-v6-ssm
+        offset: 109
+        requires: trm
+        core: {}
+        fabric: {ipv6_trm: true, v6_no_rp: true, underlay_mcast_ip: 239.2.1.109}
+      - name: netflow
+        offset: 110
+        requires: netflow
+        core: {}
+        fabric: {netflow_enable: true, nf_monitor: ND_IT_MONITOR}
+      - name: rd-zero
+        offset: 111
+        requires: iosxe43
+        core: {route_distinguisher_id: 0}
+        fabric: {}
+      - name: mvpn-inter-as
+        offset: 112
+        requires: iosxe_trm
+        core: {}
+        fabric: {trm_enable: true, no_rp: true, underlay_mcast_ip: 239.2.1.112, mvpn_inter_as: true}
+      - name: trm-bgw
+        offset: 113
+        requires: bgw_trm
+        core: {}
+        fabric: {trm_enable: true, no_rp: true, underlay_mcast_ip: 239.2.1.113, trm_bgw_msite: true}
+      - name: security-permit
+        offset: 114
+        requires: security
+        core: {default_security_action: enforcedPermit, default_security_group_tag: 15114}
+        fabric: {}
+      - name: security-deny
+        offset: 115
+        requires: security
+        core: {default_security_action: enforcedDeny, default_security_group_tag: 15115}
+        fabric: {}
+      - name: trm-v4-overlay
+        offset: 116
+        requires: trm
+        core: {}
+        fabric:
+          trm_enable: true
+          no_rp: true
+          underlay_mcast_ip: 239.2.1.116
+          overlay_mcast_group: 239.12.0.0/24
+      - name: vpn-leaking
+        offset: 117
+        requires: nd43
+        core: {}
+        fabric: {enable_vrf_vpn_route_leaking: true}
+
+- name: Properties - Execute Each Independent VRF Case
+  ansible.builtin.include_tasks: properties_case_tasks.yaml
+  loop: "{{ nd_vrf_property_cases }}"
+  loop_control:
+    loop_var: vrf_property_case
+    label: "{{ vrf_property_case.name }}"
+  when:
+    - vrf_property_case.requires | default('general') in nd_vrf_property_features
+    - nd_vrf_property_case_names | length == 0 or vrf_property_case.name in nd_vrf_property_case_names

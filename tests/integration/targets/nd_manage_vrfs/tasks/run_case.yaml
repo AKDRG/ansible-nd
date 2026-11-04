@@ -1,0 +1,13 @@
+---
+- name: Reset VRF Case Cleanup Scope
+  ansible.builtin.set_fact:
+    target_fabric: ''
+    target_vrf_names: []
+
+- name: Run VRF Case With Scoped Cleanup
+  block:
+    - name: Execute Selected VRF Test
+      ansible.builtin.include_tasks: "{{ nd_vrf_test_case_to_run }}"
+  always:
+    - name: Clean Up Only This Case's VRFs
+      ansible.builtin.include_tasks: setup.yaml

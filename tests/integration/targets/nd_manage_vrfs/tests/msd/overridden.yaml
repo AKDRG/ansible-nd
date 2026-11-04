@@ -41,9 +41,6 @@
         max_bgp_paths: 3
         max_ibgp_paths: 3
         ipv6_linklocal_enable: true
-        adv_host_routes: true
-        adv_default_routes: false
-        static_default_route: false
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_msd_child_fabric }}"
@@ -56,7 +53,7 @@
     - overridden
 
 - name: MSD Overridden - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd
@@ -66,7 +63,7 @@
   vars:
     file: msd_over_seed
     vrf_conf: "{{ nd_vrf_msd_over_seed }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd
@@ -76,7 +73,7 @@
   vars:
     file: msd_over
     vrf_conf: "{{ nd_vrf_msd_over_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd

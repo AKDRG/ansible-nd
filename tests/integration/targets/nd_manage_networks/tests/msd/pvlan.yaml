@@ -1,0 +1,73 @@
+---
+- name: PVLAN - Fabric Group Tests
+  block:
+    - name: PVLAN - Select Fabric Group Test Scope
+      ansible.builtin.set_fact:
+        target_fabric: "{{ nd_network_msd_parent_fabric }}"
+        nd_network_pvlan_prefix: ansible-nd-net-msd-pvlan
+        nd_network_pvlan_offset: 350
+
+    - name: PVLAN - Read Parent Fabric Prerequisites
+      cisco.nd.nd_rest:
+        path: "/api/v1/manage/fabrics/{{ target_fabric | urlencode }}"
+        method: get
+      register: nd_network_pvlan_parent
+
+    - name: PVLAN - Require a Manage Fabric Group
+      ansible.builtin.assert:
+        that:
+          - nd_network_pvlan_parent.jsondata.category == 'fabricGroup'
+          - nd_network_pvlan_parent.jsondata.management.type == 'vxlan'
+        fail_msg: "This PVLAN test requires a Fabric group, not a Multi-cluster Fabric group."
+
+    - name: PVLAN - Read Fabric Group Members Once
+      cisco.nd.nd_rest:
+        path: "/api/v1/manage/fabrics/{{ target_fabric | urlencode }}/members?max=10000&offset=0"
+        method: get
+      register: nd_network_pvlan_members
+
+    - name: PVLAN - Retain Discovered Member Scope
+      ansible.builtin.set_fact:
+        nd_network_pvlan_member_names: "{{ nd_network_pvlan_members.jsondata.fabrics | map(attribute='name') | list }}"
+        nd_network_pvlan_members_meta: "{{ nd_network_pvlan_members.jsondata.get('meta', {}) }}"
+
+    - name: PVLAN - Require Complete Data Center VXLAN Membership
+      ansible.builtin.assert:
+        that:
+          - nd_network_pvlan_member_names | length > 0
+          - nd_network_pvlan_member_names | unique | length == nd_network_pvlan_member_names | length
+          - nd_network_msd_child_fabric in nd_network_pvlan_member_names
+          - >-
+            nd_network_pvlan_members.jsondata.fabrics
+            | rejectattr('type', 'in', ['vxlanIbgp', 'vxlanEbgp']) | list | length == 0
+          - nd_network_pvlan_members_meta.get('counts', nd_network_pvlan_members_meta).get('remaining', 0) | int == 0
+          - >-
+            nd_network_pvlan_members_meta.get('counts', nd_network_pvlan_members_meta).get('total', nd_network_pvlan_member_names | length) | int ==
+            nd_network_pvlan_member_names | length
+        fail_msg: "PVLAN requires complete membership information and Data Center VXLAN members only; Campus members are not supported."
+
+    - name: PVLAN - Read Each Member Fabric Once
+      cisco.nd.nd_rest:
+        path: "/api/v1/manage/fabrics/{{ item | urlencode }}"
+        method: get
+      loop: "{{ nd_network_pvlan_member_names }}"
+      register: nd_network_pvlan_member_details
+
+    - name: PVLAN - Require Private VLAN Enabled on Every Member
+      ansible.builtin.assert:
+        that:
+          - item.jsondata.management.type in ['vxlanIbgp', 'vxlanEbgp']
+          - item.jsondata.management.privateVlan | default(false) is sameas true
+        fail_msg: "Private VLAN must already be enabled on every Data Center VXLAN member; this test does not change fabric settings."
+      loop: "{{ nd_network_pvlan_member_details.results }}"
+      loop_control:
+        label: "{{ item.item }}"
+
+    - name: PVLAN - Run Parent and Member Definition Tests
+      ansible.builtin.import_tasks: ../../tasks/pvlan_tasks.yaml
+  when:
+    - nd_network_run_msd | bool
+    - nd_network_run_pvlan | bool
+  tags:
+    - msd
+    - pvlan

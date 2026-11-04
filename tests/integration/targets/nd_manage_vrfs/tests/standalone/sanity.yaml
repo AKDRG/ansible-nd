@@ -63,7 +63,7 @@
         static_default_route: false
         trm_enable: false
         bgp_password: abcdef12
-        bgp_passwd_encrypt: 3
+        bgp_passwd_encrypt: 3des
         netflow_enable: false
         attach: "{{ nd_vrf_sanity_attach_block }}"
         deploy: "{{ nd_vrf_sanity_attach_block | length > 0 }}"
@@ -75,7 +75,6 @@
         loopback_route_tag: 12441
         max_bgp_paths: 1
         max_ibgp_paths: 2
-        ipv6_linklocal_enable: true
         disable_rt_auto: false
         adv_host_routes: false
         adv_default_routes: true
@@ -115,12 +114,14 @@
         static_default_route: false
         deploy: false
     nd_vrf_sanity_delete_config:
+      - vrf_name: ansible-nd-vrf-sanity-a
+      - vrf_name: ansible-nd-vrf-sanity-b
       - vrf_name: ansible-nd-vrf-sanity-c
   delegate_to: localhost
   tags: sanity
 
 - name: Standalone Sanity - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_standalone | bool
   tags: sanity
 
@@ -128,7 +129,7 @@
   vars:
     file: standalone_sanity_merge
     vrf_conf: "{{ nd_vrf_sanity_merge_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: sanity
 
@@ -136,7 +137,7 @@
   vars:
     file: standalone_sanity_replace
     vrf_conf: "{{ nd_vrf_sanity_replace_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: sanity
 
@@ -144,7 +145,7 @@
   vars:
     file: standalone_sanity_override
     vrf_conf: "{{ nd_vrf_sanity_override_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: sanity
 
@@ -152,7 +153,7 @@
   vars:
     file: standalone_sanity_delete
     vrf_conf: "{{ nd_vrf_sanity_delete_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: sanity
 
@@ -243,7 +244,7 @@
     config: "{{ nd_vrf_standalone_sanity_override_conf }}"
     output_level: debug
   register: standalone_sanity_overridden
-  when: nd_vrf_run_standalone | bool
+  when: nd_vrf_run_standalone | bool and nd_vrf_run_overridden | bool
   tags: sanity
 
 - name: Standalone Sanity TC3 - Gather After Overridden
@@ -252,7 +253,7 @@
     state: gathered
     config: []
   register: standalone_sanity_overridden_gathered
-  when: nd_vrf_run_standalone | bool
+  when: nd_vrf_run_standalone | bool and nd_vrf_run_overridden | bool
   tags: sanity
 
 - name: Standalone Sanity TC3 - Validate Override Created VRF
@@ -260,7 +261,7 @@
     nd_data: "{{ standalone_sanity_overridden_gathered }}"
     test_data: "{{ nd_vrf_standalone_sanity_override_conf }}"
     changed: "{{ standalone_sanity_overridden.changed }}"
-  when: nd_vrf_run_standalone | bool
+  when: nd_vrf_run_standalone | bool and nd_vrf_run_overridden | bool
   tags: sanity
 
 - name: Standalone Sanity TC3 - Validate Override Removed Old VRFs
@@ -270,20 +271,20 @@
       - vrf_name: ansible-nd-vrf-sanity-a
       - vrf_name: ansible-nd-vrf-sanity-b
     present: false
-  when: nd_vrf_run_standalone | bool
+  when: nd_vrf_run_standalone | bool and nd_vrf_run_overridden | bool
   tags: sanity
 
 - name: Standalone Sanity TC3 - Overridden Idempotence
   cisco.nd.nd_manage_vrfs: *standalone_sanity_override
   register: standalone_sanity_overridden_idempotent
-  when: nd_vrf_run_standalone | bool
+  when: nd_vrf_run_standalone | bool and nd_vrf_run_overridden | bool
   tags: sanity
 
 - name: Standalone Sanity TC3 - Assert Overridden Idempotence
   ansible.builtin.assert:
     that:
       - standalone_sanity_overridden_idempotent.changed == false
-  when: nd_vrf_run_standalone | bool
+  when: nd_vrf_run_standalone | bool and nd_vrf_run_overridden | bool
   tags: sanity
 
 - name: Standalone Sanity TC4 - Deleted

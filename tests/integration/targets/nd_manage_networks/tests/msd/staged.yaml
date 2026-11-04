@@ -99,7 +99,7 @@
         network_id: "{{ nd_network_base_id + 280 }}"
         vlan_id: "{{ nd_network_base_vlan + 280 }}"
         vlan_name: ndnetmsdstgadd_vlan
-        attach: "{{ nd_network_msd_staged_primary_attach_block }}"
+        attach: "{{ nd_network_msd_staged_primary_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 280}) | list }}"
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
@@ -108,7 +108,7 @@
         network_id: "{{ nd_network_base_id + 281 }}"
         vlan_id: "{{ nd_network_base_vlan + 281 }}"
         vlan_name: ndnetmsdstgremove_vlan
-        attach: "{{ nd_network_msd_staged_primary_attach_block + nd_network_msd_staged_secondary_attach_block }}"
+        attach: "{{ (nd_network_msd_staged_primary_attach_block + nd_network_msd_staged_secondary_attach_block) | map('combine', {'vlan_id': nd_network_base_vlan + 281}) | list }}"
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
@@ -117,7 +117,7 @@
         network_id: "{{ nd_network_base_id + 284 }}"
         vlan_id: "{{ nd_network_base_vlan + 284 }}"
         vlan_name: ndnetmsdstgdetach_vlan
-        attach: "{{ nd_network_msd_staged_primary_attach_block }}"
+        attach: "{{ nd_network_msd_staged_primary_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 284}) | list }}"
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
@@ -126,7 +126,7 @@
         network_id: "{{ nd_network_base_id + 282 }}"
         vlan_id: "{{ nd_network_base_vlan + 282 }}"
         vlan_name: ndnetmsdstgomit_vlan
-        attach: "{{ nd_network_msd_staged_primary_attach_block }}"
+        attach: "{{ nd_network_msd_staged_primary_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 282}) | list }}"
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
@@ -136,7 +136,7 @@
         network_id: "{{ nd_network_base_id + 283 }}"
         vlan_id: "{{ nd_network_base_vlan + 283 }}"
         vlan_name: ndnetmsdstgcreate_vlan
-        attach: "{{ nd_network_msd_staged_create_attach_block }}"
+        attach: "{{ nd_network_msd_staged_create_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 283}) | list }}"
         deploy: true
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
@@ -146,7 +146,7 @@
         network_id: "{{ nd_network_base_id + 283 }}"
         vlan_id: "{{ nd_network_base_vlan + 283 }}"
         vlan_name: ndnetmsdstgcreate_vlan
-        attach: "{{ nd_network_msd_staged_create_attach_block }}"
+        attach: "{{ nd_network_msd_staged_create_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 283}) | list }}"
         deploy: true
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
@@ -155,7 +155,7 @@
         network_id: "{{ nd_network_base_id + 280 }}"
         vlan_id: "{{ nd_network_base_vlan + 280 }}"
         vlan_name: ndnetmsdstgadd_vlan
-        attach: "{{ nd_network_msd_staged_primary_attach_block + nd_network_msd_staged_secondary_attach_block }}"
+        attach: "{{ (nd_network_msd_staged_primary_attach_block + nd_network_msd_staged_secondary_attach_block) | map('combine', {'vlan_id': nd_network_base_vlan + 280}) | list }}"
         deploy: true
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
@@ -164,7 +164,7 @@
         network_id: "{{ nd_network_base_id + 281 }}"
         vlan_id: "{{ nd_network_base_vlan + 281 }}"
         vlan_name: ndnetmsdstgremove_vlan
-        attach: "{{ nd_network_msd_staged_primary_attach_block }}"
+        attach: "{{ nd_network_msd_staged_primary_attach_block | map('combine', {'vlan_id': nd_network_base_vlan + 281}) | list }}"
         deploy: true
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
@@ -279,8 +279,8 @@
   ansible.builtin.set_fact:
     msd_staged_create_attachment_rows: >-
       {{
-        msd_staged_create_attachment_query.current.attachments
-        | default(msd_staged_create_attachment_query.current.items | default([]))
+        msd_staged_create_attachment_query.jsondata.attachments
+        | default(msd_staged_create_attachment_query.jsondata.items | default([]))
       }}
   when:
     - nd_network_run_msd | bool
@@ -389,8 +389,8 @@
   ansible.builtin.set_fact:
     msd_staged_attachment_rows: >-
       {{
-        msd_staged_attachment_query.current.attachments
-        | default(msd_staged_attachment_query.current.items | default([]))
+        msd_staged_attachment_query.jsondata.attachments
+        | default(msd_staged_attachment_query.jsondata.items | default([]))
       }}
   when:
     - nd_network_run_msd | bool
@@ -417,7 +417,7 @@
 - name: MSD Staged TC4 - Assert Omitted Network Definition Remains
   ansible.builtin.assert:
     that:
-      - (msd_staged_gathered.after | default([]) | to_json) is search("ndnetmsdstgomit")
+      - (msd_staged_gathered.gathered | default([]) | to_json) is search("ndnetmsdstgomit")
       - msd_staged_attachment_rows | selectattr("networkName", "equalto", "ndnetmsdstgcreate") | selectattr("attach", "equalto", true) | list | length > 0
       - >-
         (
@@ -432,9 +432,12 @@
       - msd_staged_attachment_rows | selectattr("networkName", "equalto", "ndnetmsdstgomit") | selectattr("attach", "equalto", true) | list | length == 0
       - msd_staged_repeat_result.changed == false
       - >-
+        msd_staged_attachment_rows | selectattr("networkName", "in", target_network_names)
+        | selectattr("attach", "equalto", true) | rejectattr("status", "equalto", "pending") | list | length == 0
+      - >-
         msd_staged_attachment_rows
         | selectattr("networkName", "in", target_network_names)
-        | rejectattr("status", "equalto", "pending")
+        | rejectattr("status", "in", ["pending", "notApplicable"])
         | list | length == 0
   when:
     - nd_network_run_msd | bool

@@ -1,0 +1,36 @@
+---
+- name: Attachment Options - Read Controller Bindings
+  cisco.nd.nd_rest:
+    path: >-
+      /api/v1/manage/fabrics/{{ nd_network_attachment_fabric | default(nd_network_standalone_fabric) | urlencode }}/networkAttachments/query?includeAll=true&max=10000&offset=0
+    method: post
+    content:
+      networkNames:
+        - "{{ nd_network_attachment_network_name | default('ansible-nd-net-attachment-options') }}"
+  changed_when: false
+  register: nd_network_attachment_query
+
+- name: Attachment Options - Select Requested Active Binding
+  ansible.builtin.set_fact:
+    nd_network_attachment_rows: >-
+      {{ nd_network_attachment_query.jsondata.attachments
+         | selectattr('networkName', 'equalto', nd_network_attachment_network_name | default('ansible-nd-net-attachment-options'))
+         | selectattr('attach', 'equalto', true) | list }}
+
+- name: Attachment Options - Require Exactly One Active Binding
+  ansible.builtin.assert:
+    that:
+      - nd_network_attachment_rows | length == 1
+      - nd_network_attachment_rows[0].switchId == nd_network_attachment_switch_id
+
+- name: Attachment Options - Assert Persisted Options and Freeform Text
+  ansible.builtin.assert:
+    that:
+      - nd_network_attachment_rows[0].instanceValues.sviEnabled == nd_network_expected_svi
+      - >-
+        nd_network_attachment_rows[0].instanceValues.switchRouteTargetImport | default([]) | sort ==
+        nd_network_expected_rt_import | sort
+      - >-
+        nd_network_attachment_rows[0].instanceValues.switchRouteTargetExport | default([]) | sort ==
+        nd_network_expected_rt_export | sort
+      - nd_network_attachment_rows[0].extraConfig | default('') | trim == nd_network_expected_freeform | trim

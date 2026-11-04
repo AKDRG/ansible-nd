@@ -1,0 +1,13 @@
+---
+- name: Attachment VLAN - Select Standalone Scope
+  ansible.builtin.set_fact:
+    target_fabric: "{{ nd_network_standalone_fabric }}"
+    nd_network_attachment_vlan_switch: "{{ nd_network_standalone_switch }}"
+    nd_network_attachment_vlan_interface: "{{ nd_network_standalone_interface }}"
+  when: nd_network_run_standalone | bool
+
+- name: Attachment VLAN - Exercise Omitted Per-Attachment VLAN
+  ansible.builtin.import_tasks: ../../tasks/attachment_vlan_tasks.yaml
+  when:
+    - nd_network_run_standalone | bool
+    - nd_network_run_attachment_options | bool

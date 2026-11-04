@@ -24,6 +24,7 @@
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
+            multicast_group_address: 239.1.1.62
     nd_network_msd_replace_config:
       - network_name: ansible-nd-net-msd-replaced
         layer: layer2
@@ -33,6 +34,7 @@
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
+            multicast_group_address: 239.1.1.62
   delegate_to: localhost
   tags:
     - msd

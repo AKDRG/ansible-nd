@@ -25,17 +25,25 @@
         vlan_name: ans_nd_net_msd_mrg_sw
         deploy: false
         deploy_type: switch
+        attach: >-
+          {{ [{'ip_address': nd_network_msd_switch, 'vlan_id': nd_network_base_vlan + 201, 'deploy': false}]
+             if nd_network_run_msd_attach | bool else [] }}
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
+            multicast_group_address: 239.1.1.61
       - network_name: ansible-nd-net-msd-merged-resource
         layer: layer2
         network_id: "{{ nd_network_base_id + 202 }}"
         vlan_id: "{{ nd_network_base_vlan + 202 }}"
         vlan_name: ans_nd_net_msd_mrg_res
         deploy: false
-        deploy_type: network
+        deploy_type: switch
+        attach: >-
+          {{ [{'ip_address': nd_network_msd_switch, 'vlan_id': nd_network_base_vlan + 202, 'deploy': false}]
+             if nd_network_run_msd_attach | bool else [] }}
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
+            multicast_group_address: 239.1.1.62
     nd_network_msd_merged_deploy_config:
       - network_name: ansible-nd-net-msd-merged-switch
         layer: layer2
@@ -44,17 +52,25 @@
         vlan_name: ans_nd_net_msd_mrg_sw
         deploy: true
         deploy_type: switch
+        attach: >-
+          {{ [{'ip_address': nd_network_msd_switch, 'vlan_id': nd_network_base_vlan + 201, 'deploy': true}]
+             if nd_network_run_msd_attach | bool else [] }}
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
+            multicast_group_address: 239.1.1.61
       - network_name: ansible-nd-net-msd-merged-resource
         layer: layer2
         network_id: "{{ nd_network_base_id + 202 }}"
         vlan_id: "{{ nd_network_base_vlan + 202 }}"
         vlan_name: ans_nd_net_msd_mrg_res
         deploy: true
-        deploy_type: network
+        deploy_type: switch
+        attach: >-
+          {{ [{'ip_address': nd_network_msd_switch, 'vlan_id': nd_network_base_vlan + 202, 'deploy': true}]
+             if nd_network_run_msd_attach | bool else [] }}
         child_fabric_config:
           - fabric_name: "{{ nd_network_msd_child_fabric }}"
+            multicast_group_address: 239.1.1.62
   delegate_to: localhost
   tags:
     - msd
@@ -118,7 +134,7 @@
     - msd
     - merged
 
-- name: MSD Merged TC2 - Deploy Parent Once With Mixed Deploy Types
+- name: MSD Merged TC2 - Deploy Network Attachments
   cisco.nd.nd_manage_networks: &msd_merged_deploy_conf
     fabric_name: "{{ target_fabric }}"
     state: merged
@@ -133,12 +149,49 @@
 - name: MSD Merged TC2 - Assert Deploy Result
   ansible.builtin.assert:
     that:
-      - msd_merged_deployed.changed == true
+      - msd_merged_deployed.changed == (nd_network_run_msd_attach | bool)
       - msd_merged_deployed.child_fabrics | length == 1
   when: nd_network_run_msd | bool
   tags:
     - msd
     - merged
+
+- name: MSD Merged TC2 - Read Deployed Attachments
+  cisco.nd.nd_rest:
+    path: "/api/v1/manage/fabrics/{{ target_fabric }}/networkAttachments/query?includeAll=true&max=10000&offset=0"
+    method: post
+    content:
+      networkNames: "{{ nd_network_msd_merged_deploy_conf | map(attribute='network_name') | list }}"
+  changed_when: false
+  register: msd_merged_attachment_readback
+  until:
+    - msd_merged_attachment_readback.jsondata.attachments | selectattr('attach', 'equalto', true) | list | length == 2
+    - >-
+      msd_merged_attachment_readback.jsondata.attachments | selectattr('attach', 'equalto', true)
+      | rejectattr('status', 'equalto', 'deployed') | list | length == 0
+  retries: 30
+  delay: 5
+  when:
+    - nd_network_run_msd | bool
+    - nd_network_run_msd_attach | bool
+    - msd_merged_deployed is succeeded
+  tags: [msd, merged]
+
+- name: MSD Merged TC2 - Assert Actual Deployment
+  ansible.builtin.assert:
+    that:
+      - msd_merged_attachment_readback.jsondata.attachments | selectattr('attach', 'equalto', true) | list | length == 2
+      - >-
+        msd_merged_attachment_readback.jsondata.attachments | selectattr('attach', 'equalto', true) | map(attribute='networkName') | sort
+        == nd_network_msd_merged_deploy_conf | map(attribute='network_name') | sort
+      - >-
+        msd_merged_attachment_readback.jsondata.attachments | selectattr('attach', 'equalto', true)
+        | rejectattr('status', 'equalto', 'deployed') | list | length == 0
+  when:
+    - nd_network_run_msd | bool
+    - nd_network_run_msd_attach | bool
+    - msd_merged_deployed is succeeded
+  tags: [msd, merged]
 
 - name: MSD Merged TC3 - Gather Parent Networks
   cisco.nd.nd_manage_networks:
@@ -191,7 +244,9 @@
 - name: MSD Merged TC4 - Idempotence
   cisco.nd.nd_manage_networks: *msd_merged_deploy_conf
   register: msd_merged_idempotent
-  when: nd_network_run_msd | bool
+  when:
+    - nd_network_run_msd | bool
+    - not (nd_network_run_msd_attach | bool) or msd_merged_attachment_readback is succeeded
   tags:
     - msd
     - merged
@@ -204,3 +259,18 @@
   tags:
     - msd
     - merged
+
+- name: MSD Merged TC4 - Check Repeat Idempotence
+  cisco.nd.nd_manage_networks: *msd_merged_deploy_conf
+  check_mode: true
+  register: msd_merged_check_repeat
+  when:
+    - nd_network_run_msd | bool
+    - not (nd_network_run_msd_attach | bool) or msd_merged_attachment_readback is succeeded
+  tags: [msd, merged]
+
+- name: MSD Merged TC4 - Assert Check Repeat Idempotence
+  ansible.builtin.assert:
+    that: [not msd_merged_check_repeat.changed]
+  when: nd_network_run_msd | bool
+  tags: [msd, merged]

@@ -53,7 +53,7 @@
     - overridden
 
 - name: MCFG Overridden - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -63,7 +63,7 @@
   vars:
     file: mcfg_over_seed
     vrf_conf: "{{ nd_vrf_mcfg_over_seed }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -73,7 +73,7 @@
   vars:
     file: mcfg_over
     vrf_conf: "{{ nd_vrf_mcfg_over_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg

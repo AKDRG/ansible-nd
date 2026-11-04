@@ -21,10 +21,15 @@
         [
           {
             'ip_address': nd_vrf_msd_switch,
+            'freeform_config': '! ND integration group VRF attachment',
             'attachment_options': {
               'loopback_id': 102,
               'loopback_ipv4_address': '10.255.102.1',
-              'loopback_ipv6_address': '2001:db8:102::1'
+              'loopback_ipv6_address': '2001:db8:102::1',
+              'import_vpn_rt': ['65000:50102'],
+              'export_vpn_rt': ['65000:50102'],
+              'import_evpn_rt': ['65000:50102'],
+              'export_evpn_rt': ['65000:50102']
             }
           }
         ] if nd_vrf_msd_switch | length > 0 else []
@@ -48,11 +53,6 @@
         v6_redist_direct_rmap: FABRIC-RMAP-REDIST-SUBNET
         ipv6_linklocal_enable: true
         disable_rt_auto: true
-        trm_enable: false
-        netflow_enable: false
-        adv_host_routes: true
-        adv_default_routes: false
-        static_default_route: false
         max_bgp_paths: 2
         max_ibgp_paths: 2
         import_vpn_rt:
@@ -65,7 +65,7 @@
           - "65000:50020"
         attach: "{{ nd_vrf_msd_attach_block }}"
         deploy: "{{ nd_vrf_msd_attach_block | length > 0 }}"
-        deploy_type: vrf
+        deploy_type: switch
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_msd_child_fabric }}"
             l3vni_wo_vlan: false
@@ -73,12 +73,11 @@
             adv_default_routes: false
             static_default_route: false
             bgp_password: abcdef12
-            bgp_passwd_encrypt: 3
+            bgp_passwd_encrypt: 3des
             trm_enable: false
             netflow_enable: false
       - vrf_name: ansible-msd-merged-l3vni
         vrf_id: "{{ nd_vrf_base_id + 27 }}"
-        l3vni_wo_vlan: true
         vrf_description: Ansible ND VRF MSD merged L3VNI without VLAN
         loopback_route_tag: 12347
         max_bgp_paths: 1
@@ -93,11 +92,6 @@
           - "65000:50027"
         export_evpn_rt:
           - "65000:50027"
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
-        trm_enable: false
-        netflow_enable: false
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_msd_child_fabric }}"
@@ -116,9 +110,6 @@
         max_ibgp_paths: 3
         ipv6_linklocal_enable: true
         disable_rt_auto: false
-        adv_host_routes: true
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
   delegate_to: localhost
   tags:
@@ -126,7 +117,7 @@
     - merged
 
 - name: MSD Merged - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd
@@ -136,7 +127,7 @@
   vars:
     file: msd_merged
     vrf_conf: "{{ nd_vrf_msd_merged_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd
@@ -232,6 +223,17 @@
   cisco.nd.nd_manage_vrfs: *msd_merged_conf
   register: msd_merged_idempotent
   when: nd_vrf_run_msd | bool
+  tags:
+    - msd
+    - merged
+
+- name: MSD Merged TC2 - Verify VRF Attachment Fields
+  ansible.builtin.include_tasks: ../../tasks/attachment_options_readback_tasks.yaml
+  vars:
+    nd_vrf_attachment_config: "{{ nd_vrf_msd_merged_conf[0] }}"
+  when:
+    - nd_vrf_run_msd | bool
+    - nd_vrf_msd_switch | length > 0
   tags:
     - msd
     - merged

@@ -1,0 +1,79 @@
+---
+- name: Properties - Build VRF Identity and Expected Values
+  ansible.builtin.set_fact:
+    nd_vrf_property_identity:
+      vrf_name: "{{ nd_vrf_properties_prefix }}-{{ vrf_property_case.name }}"
+      vrf_id: "{{ nd_vrf_base_id | int + vrf_property_case.offset | int }}"
+      vlan_id: "{{ nd_vrf_base_vlan | int + vrf_property_case.offset | int }}"
+    nd_vrf_property_expected: "{{ vrf_property_case.core | combine(vrf_property_case.fabric) }}"
+
+- name: Properties - Retain Named VRF Cleanup Scope
+  ansible.builtin.set_fact:
+    target_vrf_names: "{{ target_vrf_names | default([]) + [nd_vrf_property_identity.vrf_name] }}"
+    nd_vrf_property_config: >-
+      {{ [nd_vrf_property_identity | combine(vrf_property_case.core) |
+          combine(vrf_property_case.fabric if nd_vrf_properties_child | length == 0 else
+            {'child_fabric_config': [vrf_property_case.fabric | combine({'fabric_name': nd_vrf_properties_child})]}) |
+          combine({'deploy': false})] }}
+
+- name: Properties - Prepare VRF Configuration
+  ansible.builtin.import_tasks: conf_prep_tasks.yaml
+  vars:
+    file: properties
+    vrf_conf: "{{ nd_vrf_property_config }}"
+
+- name: Properties - Create VRF in Check Mode
+  cisco.nd.nd_manage_vrfs: &vrf_property_args
+    fabric_name: "{{ target_fabric }}"
+    state: merged
+    config: "{{ nd_vrf_properties_conf }}"
+    output_level: debug
+  check_mode: true
+  register: nd_vrf_property_preview
+
+- name: Properties - Create VRF
+  cisco.nd.nd_manage_vrfs: *vrf_property_args
+  register: nd_vrf_property_create
+
+- name: Properties - Read Effective VRF
+  cisco.nd.nd_manage_vrfs:
+    fabric_name: "{{ nd_vrf_properties_child if nd_vrf_properties_child | length > 0 else target_fabric }}"
+    state: gathered
+    config: [{vrf_name: "{{ nd_vrf_property_identity.vrf_name }}"}]
+    output_level: debug
+  register: nd_vrf_property_gather
+
+- name: Properties - Select Requested VRF from Gathered Inventory
+  ansible.builtin.set_fact:
+    nd_vrf_property_records: >-
+      {{ nd_vrf_property_gather.gathered | selectattr('vrf_name', 'equalto', nd_vrf_property_identity.vrf_name) | list }}
+
+- name: Properties - Assert One Effective VRF
+  ansible.builtin.assert:
+    that:
+      - nd_vrf_property_records | length == 1
+
+- name: Properties - Verify Every Requested VRF Field
+  ansible.builtin.assert:
+    that:
+      - nd_vrf_property_records[0].get(item.key) == item.value
+    fail_msg: "VRF {{ nd_vrf_property_identity.vrf_name }} did not persist {{ item.key }}."
+  loop: "{{ nd_vrf_property_expected | dict2items | rejectattr('key', 'equalto', 'bgp_password') | list }}"
+  loop_control:
+    label: "{{ item.key }}"
+  when:
+    - nd_vrf_property_create is succeeded
+    - nd_vrf_property_records | length == 1
+
+- name: Properties - Repeat VRF in Normal and Check Mode
+  cisco.nd.nd_manage_vrfs: *vrf_property_args
+  check_mode: "{{ item }}"
+  loop: [false, true]
+  register: nd_vrf_property_repeats
+
+- name: Properties - Assert VRF Repeat Idempotence
+  ansible.builtin.assert:
+    that: [not item.changed]
+  loop: "{{ nd_vrf_property_repeats.results }}"
+  loop_control:
+    label: "check_mode={{ item.item }}"

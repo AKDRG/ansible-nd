@@ -1,0 +1,13 @@
+---
+- name: Properties - Select Standalone Network Scope
+  ansible.builtin.set_fact:
+    target_fabric: "{{ nd_network_standalone_fabric }}"
+    nd_network_properties_child: ''
+    nd_network_properties_prefix: ansible-nd-net-properties
+  when: nd_network_run_standalone | bool
+
+- name: Properties - Exercise Standalone Network Fields
+  ansible.builtin.import_tasks: ../../tasks/properties_tasks.yaml
+  when:
+    - nd_network_run_standalone | bool
+    - nd_network_run_properties | bool

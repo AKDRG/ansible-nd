@@ -9,10 +9,24 @@
 
 - name: Build List of ND Network Test Items
   ansible.builtin.set_fact:
-    nd_network_test_items: "{{ nd_network_testcases.files | map(attribute='path') | list }}"
+    nd_network_test_items: "{{ nd_network_testcases.files | map(attribute='path') | sort | list }}"
 
 - name: Run ND Network Test Cases
-  ansible.builtin.include_tasks: "{{ nd_network_test_case_to_run }}"
+  ansible.builtin.include_tasks: run_case.yaml
+  vars:
+    nd_network_case_topology: "{{ nd_network_test_case_to_run | dirname | basename }}"
+    nd_network_case_state: "{{ nd_network_test_case_to_run | basename | splitext | first }}"
+    nd_network_case_attach: >-
+      {{ nd_network_run_attach if nd_network_case_topology == 'standalone'
+         else lookup('ansible.builtin.vars', 'nd_network_run_' + nd_network_case_topology + '_attach') }}
   with_items: "{{ nd_network_test_items }}"
   loop_control:
     loop_var: nd_network_test_case_to_run
+  when:
+    - lookup('ansible.builtin.vars', 'nd_network_run_' + nd_network_case_topology) | bool
+    - nd_network_case_state != 'pvlan' or nd_network_run_pvlan | bool
+    - nd_network_case_state != 'properties' or nd_network_run_properties | bool
+    - nd_network_case_state != 'attachment_options' or nd_network_run_attachment_options | bool
+    - nd_network_case_state != 'attachment_vlan' or nd_network_run_attachment_options | bool
+    - nd_network_case_state != 'overridden' or nd_network_run_overridden | bool
+    - nd_network_case_state != 'staged' or (nd_network_run_staged | bool and nd_network_case_attach | bool)

@@ -22,9 +22,6 @@
         vrf_description: Ansible ND VRF MSD gathered test
         max_bgp_paths: 2
         max_ibgp_paths: 2
-        adv_host_routes: true
-        adv_default_routes: false
-        static_default_route: false
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_msd_child_fabric }}"
@@ -36,9 +33,6 @@
         vlan_id: "{{ nd_vrf_base_vlan + 37 }}"
         vrf_description: Ansible ND VRF MSD gathered parent-only test
         ipv6_linklocal_enable: true
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
   delegate_to: localhost
   tags:
@@ -46,7 +40,7 @@
     - gathered
 
 - name: MSD Gathered - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd
@@ -56,7 +50,7 @@
   vars:
     file: msd_gathered
     vrf_conf: "{{ nd_vrf_msd_gathered_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_msd | bool
   tags:
     - msd

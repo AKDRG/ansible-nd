@@ -1,0 +1,108 @@
+---
+- name: Properties - Define Network Field Cases
+  ansible.builtin.set_fact:
+    nd_network_property_cases:
+      - name: l2-cross-connect
+        offset: 400
+        core: {layer: layer2, display_name: ND_IT_L2, vlan_name: ND_IT_L2, vlan_network_type: normal}
+        fabric: {x_connect: true, multicast_group_address: 239.1.1.90}
+      - name: l3-routing
+        offset: 401
+        core:
+          layer: layer3
+          vrf_name: "{{ nd_network_l3_vrf_name }}"
+          display_name: ND_IT_L3
+          vlan_name: ND_IT_L3
+          gateway_ipv4_address: 10.91.201.1/24
+          gateway_ipv6_address: 2001:db8:201::1/64
+          secondary_gateway_ipv4_collection: [10.91.202.1/24, 10.91.203.1/24]
+          secondary_gateway_ipv6_collection: ['2001:db8:202::1/64', '2001:db8:203::1/64']
+          vlan_intf_desc: ND integration Network SVI
+          mtu: 9000
+          arp_suppression: false
+          routing_tag: 23456
+        fabric:
+          multicast_group_address: 239.1.1.91
+          dhcp_servers: [{server_address: 192.0.2.201, server_vrf: management}]
+          loopback_id: 201
+          gateway_on_border: true
+      - name: trm
+        offset: 402
+        requires: trm
+        core:
+          layer: layer3
+          vrf_name: "{{ nd_network_l3_vrf_name }}"
+          gateway_ipv4_address: 10.91.204.1/24
+          gateway_ipv6_address: 2001:db8:204::1/64
+        fabric: {trm_enable: true, ipv6_trm: true, igmp_version: 3, multicast_group_address: 239.1.1.92}
+      - name: netflow
+        offset: 403
+        requires: netflow
+        core:
+          layer: layer3
+          vrf_name: "{{ nd_network_l3_vrf_name }}"
+          gateway_ipv4_address: 10.91.205.1/24
+        fabric: {netflow_enable: true, vlan_netflow_monitor: ND_IT_L2_MONITOR, interface_netflow_monitor: ND_IT_MONITOR}
+      - name: layer2-with-vrf
+        offset: 404
+        requires: security
+        core: {layer: layer2WithVrf, vrf_name: "{{ nd_network_l3_vrf_name }}", vlan_name: ND_IT_L2_VRF}
+        fabric: {multicast_group_address: 239.1.1.94}
+      - name: mapped-interface
+        offset: 405
+        requires: interfaces
+        core:
+          layer: layer2
+          attach:
+            - ip_address: "{{ nd_network_msd_switch if nd_network_properties_child | length > 0 else nd_network_standalone_switch }}"
+              vlan_id: "{{ nd_network_base_vlan | int + 405 }}"
+              deploy: false
+              interfaces:
+                - mode: trunk
+                  interface_range: "{{ nd_network_property_mapped_interface }}"
+                  interface_group_name: "{{ nd_network_property_interface_group }}"
+                  native_vlan: false
+                  mapping_type: single
+                  customer_vlan: 305
+        fabric: {}
+      - name: native-interface
+        offset: 406
+        requires: interfaces
+        core:
+          layer: layer2
+          attach:
+            - ip_address: "{{ nd_network_msd_switch if nd_network_properties_child | length > 0 else nd_network_standalone_switch }}"
+              vlan_id: "{{ nd_network_base_vlan | int + 406 }}"
+              deploy: false
+              interfaces:
+                - mode: trunk
+                  interface_range: "{{ nd_network_property_native_interface }}"
+                  native_vlan: true
+                  mapping_type: none
+        fabric: {}
+      - name: mapping-only
+        offset: 407
+        requires: interfaces
+        core:
+          layer: layer2
+          attach:
+            - ip_address: "{{ nd_network_msd_switch if nd_network_properties_child | length > 0 else nd_network_standalone_switch }}"
+              vlan_id: "{{ nd_network_base_vlan | int + 407 }}"
+              deploy: false
+              interfaces:
+                - mode: trunk
+                  interface_range: "{{ nd_network_property_mapping_interface }}"
+                  native_vlan: false
+                  mapping_type: single
+                  customer_vlan: 305
+        fabric: {}
+
+- name: Properties - Execute Each Independent Network Case
+  ansible.builtin.include_tasks: properties_case_tasks.yaml
+  loop: "{{ nd_network_property_cases }}"
+  loop_control:
+    loop_var: network_property_case
+    label: "{{ network_property_case.name }}"
+  when:
+    - network_property_case.requires | default('general') in nd_network_property_features
+    - nd_network_property_case_names | length == 0 or network_property_case.name in nd_network_property_case_names

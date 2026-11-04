@@ -226,7 +226,7 @@ class VrfValidators:
     @staticmethod
     def validate_overlay_mcast_group(v: str | None) -> str | None:
         """
-        Validate that an IPv4 address is in the 224.0.0.0/4 multicast range.
+        Validate an IPv4 CIDR contained in the 224.0.0.0/4 multicast range.
 
         Used for the ``overlay_mcast_group`` (TRM) field.
         """
@@ -235,15 +235,15 @@ class VrfValidators:
         v = str(v).strip()
         if not v:
             return None
+        if "/" not in v:
+            raise ValueError(f"CIDR notation required for overlay_mcast_group: {v}")
         try:
-            addr = ip_address(v)
-            if addr.version != 4:
-                raise ValueError(f"Expected IPv4 multicast address, got IPv6: {v}")
-            if addr not in ip_network("224.0.0.0/4"):
-                raise ValueError(f"overlay_mcast_group must be in the 224.0.0.0/4 " f"multicast range, got: {v}")
+            network = ip_network(v, strict=False)
+            if network.version != 4 or not network.subnet_of(ip_network("224.0.0.0/4")):
+                raise ValueError(f"overlay_mcast_group must be within the 224.0.0.0/4 multicast range: {v}")
             return v
         except ValueError as exc:
-            raise ValueError(f"Invalid overlay multicast group address: {v}") from exc
+            raise ValueError(f"Invalid overlay multicast group CIDR: {v}") from exc
 
     @staticmethod
     def validate_bgp_passwd_encrypt(v: str | None) -> str | None:

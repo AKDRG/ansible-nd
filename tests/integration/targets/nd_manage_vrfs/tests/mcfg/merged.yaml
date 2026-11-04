@@ -55,7 +55,7 @@
           - "65000:50030"
         attach: "{{ nd_vrf_mcfg_attach_block }}"
         deploy: "{{ nd_vrf_mcfg_attach_block | length > 0 }}"
-        deploy_type: vrf
+        deploy_type: switch
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_mcfg_child_fabric }}"
             adv_host_routes: true
@@ -63,10 +63,9 @@
             static_default_route: false
             netflow_enable: false
             bgp_password: abcdef12
-            bgp_passwd_encrypt: 3
+            bgp_passwd_encrypt: 3des
       - vrf_name: ansible-nd-vrf-mcfg-merged-l3vni
         vrf_id: "{{ nd_vrf_base_id + 37 }}"
-        l3vni_wo_vlan: true
         vrf_description: Ansible ND VRF MCFG merged L3VNI without VLAN
         loopback_route_tag: 12349
         max_bgp_paths: 1
@@ -81,9 +80,6 @@
           - "65000:50037"
         export_evpn_rt:
           - "65000:50037"
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
         child_fabric_config:
           - fabric_name: "{{ nd_vrf_mcfg_child_fabric }}"
@@ -102,9 +98,6 @@
         max_ibgp_paths: 3
         ipv6_linklocal_enable: true
         disable_rt_auto: false
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
   delegate_to: localhost
   tags:
@@ -112,7 +105,7 @@
     - merged
 
 - name: MCFG Merged - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -122,7 +115,7 @@
   vars:
     file: mcfg_merged
     vrf_conf: "{{ nd_vrf_mcfg_merged_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg

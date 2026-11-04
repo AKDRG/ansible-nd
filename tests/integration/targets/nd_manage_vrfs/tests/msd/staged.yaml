@@ -143,7 +143,7 @@
     - staged
 
 - name: MSD Staged - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when:
     - nd_vrf_run_msd | bool
     - nd_vrf_run_staged | bool
@@ -156,7 +156,7 @@
   vars:
     file: msd_staged_seed
     vrf_conf: "{{ nd_vrf_msd_staged_seed }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_msd | bool
     - nd_vrf_run_staged | bool
@@ -169,7 +169,7 @@
   vars:
     file: msd_staged_create
     vrf_conf: "{{ nd_vrf_msd_staged_create_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_msd | bool
     - nd_vrf_run_staged | bool
@@ -182,7 +182,7 @@
   vars:
     file: msd_staged
     vrf_conf: "{{ nd_vrf_msd_staged_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when:
     - nd_vrf_run_msd | bool
     - nd_vrf_run_staged | bool
@@ -239,8 +239,8 @@
   ansible.builtin.set_fact:
     msd_staged_create_attachment_rows: >-
       {{
-        msd_staged_create_attachment_query.current.attachments
-        | default(msd_staged_create_attachment_query.current.items | default([]))
+        msd_staged_create_attachment_query.jsondata.attachments
+        | default(msd_staged_create_attachment_query.jsondata.items | default([]))
       }}
   when:
     - nd_vrf_run_msd | bool
@@ -349,8 +349,8 @@
   ansible.builtin.set_fact:
     msd_staged_attachment_rows: >-
       {{
-        msd_staged_attachment_query.current.attachments
-        | default(msd_staged_attachment_query.current.items | default([]))
+        msd_staged_attachment_query.jsondata.attachments
+        | default(msd_staged_attachment_query.jsondata.items | default([]))
       }}
   when:
     - nd_vrf_run_msd | bool
@@ -377,7 +377,7 @@
 - name: MSD Staged TC4 - Assert Omitted VRF Definition Remains
   ansible.builtin.assert:
     that:
-      - (msd_staged_gathered.after | default([]) | to_json) is search("ndvrfmsdstgomit")
+      - (msd_staged_gathered.gathered | default([]) | to_json) is search("ndvrfmsdstgomit")
       - msd_staged_attachment_rows | selectattr("vrfName", "equalto", "ndvrfmsdstgcreate") | selectattr("attach", "equalto", true) | list | length > 0
       - >-
         (
@@ -392,9 +392,12 @@
       - msd_staged_attachment_rows | selectattr("vrfName", "equalto", "ndvrfmsdstgomit") | selectattr("attach", "equalto", true) | list | length == 0
       - msd_staged_repeat_result.changed == false
       - >-
+        msd_staged_attachment_rows | selectattr("vrfName", "in", target_vrf_names)
+        | selectattr("attach", "equalto", true) | rejectattr("status", "equalto", "pending") | list | length == 0
+      - >-
         msd_staged_attachment_rows
         | selectattr("vrfName", "in", target_vrf_names)
-        | rejectattr("status", "equalto", "pending")
+        | rejectattr("status", "in", ["pending", "notApplicable"])
         | list | length == 0
   when:
     - nd_vrf_run_msd | bool

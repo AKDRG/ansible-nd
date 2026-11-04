@@ -1405,12 +1405,13 @@ def test_external_controller_readback_replays_without_vxlan_defaults():
     assert not existing.get_diff(changed_identity, exclude_unset=True)
 
 
-def test_manage_network_attachment_models_00320() -> None:
-    """Verify interface validation payload accepts controller probe VLAN."""
+@pytest.mark.parametrize("vlan", [None, 2, 2654, 4094])
+def test_manage_network_attachment_models_00320(vlan) -> None:
+    """Keep optional validation VLAN absent and preserve valid explicit values."""
     attachment = NetworkAttachmentValidateInterfaceModel(
         networkName="net1",
         switchId="FDO123",
-        vlanId=-1,
+        **({"vlanId": vlan} if vlan is not None else {}),
         attach=True,
         interfaces=[TrunkInterfaceModel(interfaceRange="Ethernet1/3")],
     )
@@ -1421,7 +1422,7 @@ def test_manage_network_attachment_models_00320() -> None:
             {
                 "networkName": "net1",
                 "switchId": "FDO123",
-                "vlanId": -1,
+                **({"vlanId": vlan} if vlan is not None else {}),
                 "interfaces": [
                     {
                         "mode": "trunk",

@@ -28,9 +28,6 @@
         vrf_id: "{{ nd_vrf_base_id + 39 }}"
         vlan_id: "{{ nd_vrf_base_vlan + 39 }}"
         vrf_description: Ansible ND VRF MCFG replaced parent-only base
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
     nd_vrf_mcfg_replace_config:
       - vrf_name: ansible-nd-vrf-mcfg-replaced
@@ -53,9 +50,6 @@
         max_bgp_paths: 2
         max_ibgp_paths: 2
         ipv6_linklocal_enable: true
-        adv_host_routes: false
-        adv_default_routes: true
-        static_default_route: true
         deploy: false
   delegate_to: localhost
   tags:
@@ -63,7 +57,7 @@
     - replaced
 
 - name: MCFG Replaced - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -73,7 +67,7 @@
   vars:
     file: mcfg_replace_base
     vrf_conf: "{{ nd_vrf_mcfg_replace_base }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg
@@ -83,7 +77,7 @@
   vars:
     file: mcfg_replace
     vrf_conf: "{{ nd_vrf_mcfg_replace_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_mcfg | bool
   tags:
     - mcfg

@@ -12,6 +12,8 @@
 - name: MSD Deleted - Build Parent and Child Network Config
   ansible.builtin.set_fact:
     target_fabric: "{{ nd_network_msd_parent_fabric }}"
+    target_network_delete_config:
+      - network_name: ansible-nd-net-msd-deleted
     nd_network_msd_delete_seed:
       - network_name: ansible-nd-net-msd-deleted
         layer: layer2

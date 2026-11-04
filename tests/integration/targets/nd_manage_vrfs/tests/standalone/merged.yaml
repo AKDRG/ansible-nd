@@ -13,13 +13,14 @@
     target_vrf_names:
       - ansible-nd-vrf-merged
       - ansible-nd-vrf-merged-l3vni
-      - ansible-nd-vrf-merged-stage-switch
-      - ansible-nd-vrf-merged-stage-resource
+      - ndvrf-merged-stage-switch
+      - ndvrf-merged-stage-resource
     nd_vrf_attach_block: >-
       {{
         [
           {
             'ip_address': nd_vrf_standalone_switch,
+            'freeform_config': '! ND integration VRF attachment',
             'attachment_options': {
               'loopback_id': 101,
               'loopback_ipv4_address': '10.255.101.1',
@@ -32,6 +33,13 @@
           }
         ] if nd_vrf_standalone_switch | length > 0 else []
       }}
+    nd_vrf_stage_attach_block: >-
+      {{ [{'ip_address': nd_vrf_standalone_switch}] if nd_vrf_standalone_switch | length > 0 else [] }}
+  delegate_to: localhost
+  tags: merged
+
+- name: Merged - Build Standalone VRF Config
+  ansible.builtin.set_fact:
     nd_vrf_merged_config:
       - vrf_name: ansible-nd-vrf-merged
         vrf_id: "{{ nd_vrf_base_id + 1 }}"
@@ -59,7 +67,7 @@
         static_default_route: false
         trm_enable: false
         bgp_password: abcdef12
-        bgp_passwd_encrypt: 3
+        bgp_passwd_encrypt: 3des
         netflow_enable: false
         attach: "{{ nd_vrf_attach_block }}"
         deploy: "{{ nd_vrf_attach_block | length > 0 }}"
@@ -71,7 +79,6 @@
         loopback_route_tag: 12346
         max_bgp_paths: 1
         max_ibgp_paths: 2
-        ipv6_linklocal_enable: true
         disable_rt_auto: false
         import_vpn_rt:
           - "65000:50011"
@@ -88,17 +95,17 @@
         netflow_enable: false
         deploy: false
     nd_vrf_merged_stage_config:
-      - vrf_name: ansible-nd-vrf-merged-stage-switch
+      - vrf_name: ndvrf-merged-stage-switch
         vrf_id: "{{ nd_vrf_base_id + 12 }}"
         vlan_id: "{{ nd_vrf_base_vlan + 12 }}"
         vrf_description: Ansible ND VRF merged staged switch deploy
         adv_host_routes: true
         adv_default_routes: false
         static_default_route: false
-        attach: "{{ nd_vrf_attach_block }}"
+        attach: "{{ nd_vrf_stage_attach_block }}"
         deploy: false
         deploy_type: switch
-      - vrf_name: ansible-nd-vrf-merged-stage-resource
+      - vrf_name: ndvrf-merged-stage-resource
         vrf_id: "{{ nd_vrf_base_id + 13 }}"
         vlan_id: "{{ nd_vrf_base_vlan + 13 }}"
         vrf_description: Ansible ND VRF merged staged resource deploy
@@ -106,19 +113,19 @@
         adv_default_routes: true
         static_default_route: true
         deploy: false
-        deploy_type: vrf
+        deploy_type: switch
     nd_vrf_merged_deploy_config:
-      - vrf_name: ansible-nd-vrf-merged-stage-switch
+      - vrf_name: ndvrf-merged-stage-switch
         vrf_id: "{{ nd_vrf_base_id + 12 }}"
         vlan_id: "{{ nd_vrf_base_vlan + 12 }}"
         vrf_description: Ansible ND VRF merged staged switch deploy
         adv_host_routes: true
         adv_default_routes: false
         static_default_route: false
-        attach: "{{ nd_vrf_attach_block }}"
+        attach: "{{ nd_vrf_stage_attach_block }}"
         deploy: true
         deploy_type: switch
-      - vrf_name: ansible-nd-vrf-merged-stage-resource
+      - vrf_name: ndvrf-merged-stage-resource
         vrf_id: "{{ nd_vrf_base_id + 13 }}"
         vlan_id: "{{ nd_vrf_base_vlan + 13 }}"
         vrf_description: Ansible ND VRF merged staged resource deploy
@@ -126,12 +133,12 @@
         adv_default_routes: true
         static_default_route: true
         deploy: true
-        deploy_type: vrf
+        deploy_type: switch
   delegate_to: localhost
   tags: merged
 
 - name: Merged - Import Setup
-  ansible.builtin.import_tasks: ../../../tasks/setup.yaml
+  ansible.builtin.import_tasks: ../../tasks/setup.yaml
   when: nd_vrf_run_standalone | bool
   tags: merged
 
@@ -139,7 +146,7 @@
   vars:
     file: standalone_merged
     vrf_conf: "{{ nd_vrf_merged_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: merged
 
@@ -147,7 +154,7 @@
   vars:
     file: standalone_merged_stage
     vrf_conf: "{{ nd_vrf_merged_stage_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: merged
 
@@ -155,7 +162,7 @@
   vars:
     file: standalone_merged_deploy
     vrf_conf: "{{ nd_vrf_merged_deploy_config }}"
-  ansible.builtin.import_tasks: ../../../tasks/conf_prep_tasks.yaml
+  ansible.builtin.import_tasks: ../../tasks/conf_prep_tasks.yaml
   when: nd_vrf_run_standalone | bool
   tags: merged
 
@@ -199,6 +206,15 @@
   cisco.nd.nd_manage_vrfs: *merged_conf
   register: merged_idempotent
   when: nd_vrf_run_standalone | bool
+  tags: merged
+
+- name: Merged TC2 - Verify VRF Attachment Fields
+  ansible.builtin.include_tasks: ../../tasks/attachment_options_readback_tasks.yaml
+  vars:
+    nd_vrf_attachment_config: "{{ nd_vrf_standalone_merged_conf[0] }}"
+  when:
+    - nd_vrf_run_standalone | bool
+    - nd_vrf_standalone_switch | length > 0
   tags: merged
 
 - name: Merged TC2 - Assert Idempotence

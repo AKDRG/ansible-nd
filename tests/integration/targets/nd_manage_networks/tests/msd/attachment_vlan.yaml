@@ -1,0 +1,13 @@
+---
+- name: Attachment VLAN - Select Fabric Group Scope
+  ansible.builtin.set_fact:
+    target_fabric: "{{ nd_network_msd_parent_fabric }}"
+    nd_network_attachment_vlan_switch: "{{ nd_network_msd_switch }}"
+    nd_network_attachment_vlan_interface: "{{ nd_network_msd_interface }}"
+  when: nd_network_run_msd | bool
+
+- name: Attachment VLAN - Exercise Parent Attachment VLAN Omission
+  ansible.builtin.import_tasks: ../../tasks/attachment_vlan_tasks.yaml
+  when:
+    - nd_network_run_msd | bool
+    - nd_network_run_attachment_options | bool
