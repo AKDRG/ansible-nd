@@ -1,0 +1,149 @@
+---
+- name: PVLAN Attachments - Require a Switch and Distinct Dedicated Ports
+  ansible.builtin.assert:
+    that:
+      - nd_network_pvlan_switch | length > 0
+      - >-
+        (nd_network_pvlan_primary_interfaces + nd_network_pvlan_community_interfaces + nd_network_pvlan_isolated_interfaces)
+        | map(attribute='interface_range') | list | unique | length ==
+        (nd_network_pvlan_primary_interfaces + nd_network_pvlan_community_interfaces + nd_network_pvlan_isolated_interfaces) | length
+    fail_msg: "PVLAN attachment tests require a switch and distinct, unused PVLAN-policy ports; use individual interface names."
+
+- name: PVLAN Attachments - Resolve the Selected Member Switch Once
+  cisco.nd.nd_rest:
+    path: "/api/v1/manage/fabrics/{{ nd_network_pvlan_switch_fabric | urlencode }}/switches?max=10000&offset=0"
+    method: get
+  changed_when: false
+  register: nd_network_pvlan_switch_inventory
+
+- name: PVLAN Attachments - Select the Expected Switch Identity
+  ansible.builtin.set_fact:
+    nd_network_pvlan_switch_rows: >-
+      {{ nd_network_pvlan_switch_inventory.jsondata.switches | selectattr('fabricManagementIp', 'equalto', nd_network_pvlan_switch) | list }}
+
+- name: PVLAN Attachments - Require One Matching Switch
+  ansible.builtin.assert:
+    that: [nd_network_pvlan_switch_rows | length == 1]
+
+- name: PVLAN Attachments - Build Full and Sparse Intent
+  ansible.builtin.set_fact:
+    nd_network_pvlan_attachment_config:
+      - "{{ nd_network_pvlan_primary_config[0] | combine({'attach': [{'ip_address': nd_network_pvlan_switch, 'deploy': false, 'interfaces': nd_network_pvlan_primary_interfaces}]}) }}"
+      - "{{ nd_network_pvlan_secondary_config[0] | combine({'attach': [{'ip_address': nd_network_pvlan_switch, 'deploy': false, 'interfaces': nd_network_pvlan_community_interfaces}]}) }}"
+      - "{{ nd_network_pvlan_secondary_config[1] | combine({'attach': [{'ip_address': nd_network_pvlan_switch, 'deploy': false, 'interfaces': nd_network_pvlan_isolated_interfaces}]}) }}"
+    nd_network_pvlan_attachment_sparse_config:
+      - network_name: "{{ nd_network_pvlan_primary_config[0].network_name }}"
+        deploy: false
+        attach: [{ip_address: "{{ nd_network_pvlan_switch }}", deploy: false}]
+      - network_name: "{{ nd_network_pvlan_secondary_config[0].network_name }}"
+        deploy: false
+        attach: [{ip_address: "{{ nd_network_pvlan_switch }}", deploy: false}]
+      - network_name: "{{ nd_network_pvlan_secondary_config[1].network_name }}"
+        deploy: false
+        attach: [{ip_address: "{{ nd_network_pvlan_switch }}", deploy: false}]
+
+- name: PVLAN Attachments - Prepare Full Intent
+  ansible.builtin.import_tasks: conf_prep_tasks.yaml
+  vars:
+    file: pvlan_attachment
+    network_conf: "{{ nd_network_pvlan_attachment_config }}"
+
+- name: PVLAN Attachments - Prepare Sparse Intent
+  ansible.builtin.import_tasks: conf_prep_tasks.yaml
+  vars:
+    file: pvlan_attachment_sparse
+    network_conf: "{{ nd_network_pvlan_attachment_sparse_config }}"
+
+- name: PVLAN Attachments - Preview Attachment Creation
+  cisco.nd.nd_manage_networks: &pvlan_switch_attachment_args
+    fabric_name: "{{ target_fabric }}"
+    state: merged
+    config: "{{ nd_network_pvlan_attachment_sparse_conf }}"
+    output_level: debug
+  check_mode: true
+  register: nd_network_pvlan_attachment_preview
+
+- name: PVLAN Attachments - Create All Three Bindings
+  cisco.nd.nd_manage_networks: *pvlan_switch_attachment_args
+  register: nd_network_pvlan_attachment_create
+
+- name: PVLAN Attachments - Require Planned and Actual Changes
+  ansible.builtin.assert:
+    that:
+      - nd_network_pvlan_attachment_preview.changed
+      - nd_network_pvlan_attachment_create.changed
+
+- name: PVLAN Attachments - Verify Switch-only Bindings
+  ansible.builtin.import_tasks: pvlan_attachment_readback_tasks.yaml
+  vars:
+    nd_network_pvlan_expect_ports: false
+
+- name: PVLAN Attachments - Preview Dedicated Port Bindings
+  cisco.nd.nd_manage_networks: &pvlan_port_attachment_args
+    fabric_name: "{{ target_fabric }}"
+    state: merged
+    config: "{{ nd_network_pvlan_attachment_conf }}"
+    output_level: debug
+  check_mode: true
+  register: nd_network_pvlan_port_preview
+
+- name: PVLAN Attachments - Apply Dedicated Port Bindings
+  cisco.nd.nd_manage_networks: *pvlan_port_attachment_args
+  register: nd_network_pvlan_port_attachment
+
+- name: PVLAN Attachments - Assert Port Change Matches Supplied Interfaces
+  ansible.builtin.assert:
+    that:
+      - nd_network_pvlan_port_preview.changed == (expected_ports | length > 0)
+      - nd_network_pvlan_port_attachment.changed == (expected_ports | length > 0)
+  vars:
+    expected_ports: "{{ nd_network_pvlan_primary_interfaces + nd_network_pvlan_community_interfaces + nd_network_pvlan_isolated_interfaces }}"
+
+- name: PVLAN Attachments - Read Native Bindings Before Repeats
+  ansible.builtin.import_tasks: pvlan_attachment_readback_tasks.yaml
+  vars:
+    nd_network_pvlan_expect_ports: true
+  when: nd_network_pvlan_port_attachment is succeeded
+
+- name: PVLAN Attachments - Repeat Full Intent in Merged and Replaced Normal and Check Mode
+  cisco.nd.nd_manage_networks:
+    fabric_name: "{{ target_fabric }}"
+    state: "{{ item.state }}"
+    config: "{{ nd_network_pvlan_attachment_conf }}"
+    output_level: debug
+  check_mode: "{{ item.check }}"
+  loop:
+    - {state: merged, check: false}
+    - {state: merged, check: true}
+    - {state: replaced, check: false}
+    - {state: replaced, check: true}
+  register: nd_network_pvlan_attachment_repeats
+  when: nd_network_pvlan_port_attachment is succeeded
+
+- name: PVLAN Attachments - Assert Full Intent Idempotence
+  ansible.builtin.assert:
+    that: [not item.changed]
+  loop: "{{ nd_network_pvlan_attachment_repeats.results }}"
+  loop_control:
+    label: "state={{ item.item.state }}, check_mode={{ item.item.check }}"
+
+- name: PVLAN Attachments - Repeat Without Restating Roles or Interfaces
+  cisco.nd.nd_manage_networks:
+    fabric_name: "{{ target_fabric }}"
+    state: merged
+    config: "{{ nd_network_pvlan_attachment_sparse_conf }}"
+    output_level: debug
+  check_mode: "{{ item }}"
+  loop: [false, true]
+  register: nd_network_pvlan_attachment_sparse_repeats
+
+- name: PVLAN Attachments - Assert Sparse Intent Idempotence
+  ansible.builtin.assert:
+    that: [not item.changed]
+  loop: "{{ nd_network_pvlan_attachment_sparse_repeats.results }}"
+
+- name: PVLAN Attachments - Verify Bindings Survive All Repeats
+  ansible.builtin.import_tasks: pvlan_attachment_readback_tasks.yaml
+  vars:
+    nd_network_pvlan_expect_ports: true
+  when: nd_network_pvlan_port_attachment is succeeded

@@ -6,6 +6,8 @@
         target_fabric: "{{ nd_network_msd_parent_fabric }}"
         nd_network_pvlan_prefix: ansible-nd-net-msd-pvlan
         nd_network_pvlan_offset: 350
+        nd_network_pvlan_switch: "{{ nd_network_msd_switch }}"
+        nd_network_pvlan_switch_fabric: "{{ nd_network_msd_child_fabric }}"
 
     - name: PVLAN - Read Parent Fabric Prerequisites
       cisco.nd.nd_rest:

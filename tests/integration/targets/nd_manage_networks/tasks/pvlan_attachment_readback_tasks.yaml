@@ -1,0 +1,54 @@
+---
+- name: PVLAN Attachments - Query Only the Three Test Networks
+  cisco.nd.nd_rest:
+    path: "/api/v1/manage/fabrics/{{ target_fabric | urlencode }}/networkAttachments/query?includeAll=true&max=10000&offset=0"
+    method: post
+    content:
+      networkNames: "{{ nd_network_pvlan_attachment_conf | map(attribute='network_name') | list }}"
+  changed_when: false
+  register: nd_network_pvlan_binding_query
+
+- name: PVLAN Attachments - Select Active Test Bindings
+  ansible.builtin.set_fact:
+    nd_network_pvlan_active_bindings: "{{ nd_network_pvlan_binding_query.jsondata.attachments | selectattr('attach', 'equalto', true) | list }}"
+
+- name: PVLAN Attachments - Require Exactly the Intended Switch Bindings
+  ansible.builtin.assert:
+    that:
+      - nd_network_pvlan_active_bindings | length == 3
+      - nd_network_pvlan_active_bindings | map(attribute='networkName') | sort == nd_network_pvlan_attachment_conf | map(attribute='network_name') | sort
+      - nd_network_pvlan_active_bindings | map(attribute='switchId') | unique | list == [nd_network_pvlan_switch_rows[0].switchId]
+      - nd_network_pvlan_active_bindings | map(attribute='switchFabricName') | unique | list == [nd_network_pvlan_switch_fabric]
+
+- name: PVLAN Attachments - Verify VLAN and Interface Counts
+  ansible.builtin.assert:
+    that:
+      - binding.vlanId | int == item.vlan_id | int
+      - binding.interfaces | length == (item.attach[0].interfaces | length if nd_network_pvlan_expect_ports | bool else 0)
+  vars:
+    binding: "{{ nd_network_pvlan_active_bindings | selectattr('networkName', 'equalto', item.network_name) | first }}"
+  loop: "{{ nd_network_pvlan_attachment_conf }}"
+  loop_control:
+    label: "{{ item.network_name }}"
+
+- name: PVLAN Attachments - Index Expected Ports by Network
+  ansible.builtin.set_fact:
+    nd_network_pvlan_expected_ports: >-
+      {{ (dict(nd_network_pvlan_attachment_conf | map(attribute='network_name') |
+          zip(nd_network_pvlan_attachment_conf | map(attribute='attach') | map('first') | map(attribute='interfaces'))) | dict2items)
+         if nd_network_pvlan_expect_ports | bool else [] }}
+
+- name: PVLAN Attachments - Verify Every Port and PVLAN Mode
+  ansible.builtin.assert:
+    that:
+      - saved | length == 1
+      - >-
+        (saved[0].mode | replace('_', '') | lower) in
+        (['pvlanhost', 'host'] if item.1.mode == 'pvlan_host' else [item.1.mode | replace('_', '') | lower])
+      - saved[0].nativeVlan | default(false) == item.1.native_vlan | default(false)
+  vars:
+    binding: "{{ nd_network_pvlan_active_bindings | selectattr('networkName', 'equalto', item.0.key) | first }}"
+    saved: "{{ binding.interfaces | selectattr('interfaceRange', 'equalto', item.1.interface_range) | list }}"
+  loop: "{{ nd_network_pvlan_expected_ports | subelements('value') }}"
+  loop_control:
+    label: "{{ item.0.key }}/{{ item.1.interface_range }}/{{ item.1.mode }}"

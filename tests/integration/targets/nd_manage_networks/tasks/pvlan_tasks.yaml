@@ -118,6 +118,10 @@
       loop_control:
         label: "state={{ item.item.state }}, check_mode={{ item.item.check }}"
 
+    - name: PVLAN - Verify Optional Attachments Without Explicit Deployment
+      ansible.builtin.import_tasks: pvlan_attachment_tasks.yaml
+      when: nd_network_run_pvlan_attach | bool
+
     - name: PVLAN - Read Controller Definitions in the Owning Fabric and Every Member
       cisco.nd.nd_rest:
         path: "/api/v1/manage/fabrics/{{ item[0] | urlencode }}/networks/{{ item[1].network_name | urlencode }}"

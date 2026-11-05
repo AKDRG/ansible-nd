@@ -40,8 +40,40 @@ primary before community/isolated secondaries, repeat identical definitions in
 merged/replaced normal and check mode, and read native controller definitions.
 The Fabric-group test verifies IDs, VLANs, types and primary associations on the
 parent and every member. PVLAN definition properties are written on the parent,
-not as child overrides. These cases create unattached Layer-2 definitions with
-`deploy: false`; they do not test attachment, deployment, Layer-3 primary or traffic.
+not as child overrides. The default cases create unattached Layer-2 definitions
+with `deploy: false`. Layer-3 primary and traffic checks remain outside this suite.
+
+Enable `nd_network_run_pvlan_attach: true` to test attachments on the configured
+standalone switch or Fabric-group child switch. The shared lifecycle first
+creates switch-only bindings for all three PVLAN types, then applies any supplied
+interfaces. Native readback checks switch identity, child fabric, VLAN, ports and
+PVLAN modes. Full merged/replaced normal/check repeats and sparse merged repeats
+must be unchanged; sparse requests omit both PVLAN roles and interfaces.
+
+Supply dedicated, unused individual Ethernet ports with compatible PVLAN
+interface policies already configured on the controller and deployed to the
+switch. Verify the running switchport modes before testing attachments; saved
+controller intent alone is not sufficient. The tests do not change port policies
+or enable device/fabric features. Empty interface lists retain
+switch-only coverage. Community Networks use host ports; isolated Networks can
+use host or secondary-trunk ports. For example:
+
+```yaml
+nd_network_run_pvlan_attach: true
+nd_network_pvlan_primary_interfaces:
+  - {mode: promiscuous, interface_range: Ethernet1/58}
+  - {mode: trunk_promiscuous, interface_range: Ethernet1/59}
+nd_network_pvlan_community_interfaces:
+  - {mode: pvlan_host, interface_range: Ethernet1/60}
+nd_network_pvlan_isolated_interfaces:
+  - {mode: pvlan_host, interface_range: Ethernet1/62}
+  - {mode: trunk_secondary, interface_range: Ethernet1/63}
+```
+
+Creation and attachment use `deploy: false`; no explicit Network deployment is
+tested. Module-driven detach/delete cleanup can still perform a resource-scoped
+undeploy. Required device prerequisites must support that cleanup. Secondaries
+are removed before the primary, and no unrelated Network is removed or deployed.
 
 Existing fixture names in any scope cause failure before the lifecycle block.
 Cleanup removes only the test secondaries, then the primary, including after a

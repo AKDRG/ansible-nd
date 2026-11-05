@@ -1261,7 +1261,7 @@ def test_manage_network_attachment_config_models_00316() -> None:
     secondary_trunk = NetworkConfigModel(
         network_name="net3",
         layer="layer2",
-        vlan_network_type="community",
+        vlan_network_type="isolated",
         primary_network_id=30000,
         attach=[{"ip_address": "192.0.2.10", "interfaces": [{"mode": "trunk_secondary", "interface_range": "Ethernet1/3"}]}],
     )
@@ -1270,6 +1270,23 @@ def test_manage_network_attachment_config_models_00316() -> None:
     assert private_secondary.vlan_network_type == "privateSecondaryIsolated"
     assert private_secondary.primary_network_id == 30000
     assert secondary_trunk.attach[0].interfaces[0].mode == "trunk_secondary"
+
+
+@pytest.mark.parametrize("model_cls", [NetworkConfigModel, NetworkParentConfigModel])
+@pytest.mark.parametrize("state", ["merged", "replaced", "overridden", "staged"])
+@pytest.mark.parametrize("role", ["community", "privateSecondaryCommunity"])
+def test_community_secondary_trunk_is_rejected(model_cls, state, role):
+    """Community attachments require host ports, including through role aliases."""
+    with pytest.raises(ValidationError, match="mode=trunk_secondary is not valid for vlan_network_type=privateSecondaryCommunity; allowed modes: pvlan_host"):
+        model_cls.from_config(
+            {
+                "network_name": "COMMUNITY",
+                "vlan_network_type": role,
+                "primary_network_id": 30000,
+                "attach": [{"ip_address": "192.0.2.10", "interfaces": [{"mode": "trunk_secondary", "interface_range": "Ethernet1/61"}]}],
+            },
+            context={"state": state},
+        )
 
 
 def test_manage_network_config_models_00318() -> None:

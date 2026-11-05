@@ -39,6 +39,10 @@ nd_network_base_id: 901000
 nd_network_base_vlan: 3100
 
 nd_network_run_pvlan: false
+nd_network_run_pvlan_attach: false
+nd_network_pvlan_primary_interfaces: []
+nd_network_pvlan_community_interfaces: []
+nd_network_pvlan_isolated_interfaces: []
 nd_network_run_properties: false
 nd_network_property_features: [general]
 nd_network_property_case_names: []

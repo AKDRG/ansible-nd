@@ -7,6 +7,8 @@
         nd_network_pvlan_prefix: ansible-nd-net-pvlan
         nd_network_pvlan_offset: 150
         nd_network_pvlan_member_names: []
+        nd_network_pvlan_switch: "{{ nd_network_standalone_switch }}"
+        nd_network_pvlan_switch_fabric: "{{ nd_network_standalone_fabric }}"
 
     - name: PVLAN - Read Standalone Fabric Prerequisites
       cisco.nd.nd_rest:

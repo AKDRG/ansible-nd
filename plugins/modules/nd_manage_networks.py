@@ -164,7 +164,8 @@ options:
                   - Interface mode.
                   - C(normal) Networks allow C(access), C(dot1q_tunnel), and C(trunk).
                   - C(primary) Networks allow C(promiscuous) and C(trunk_promiscuous).
-                  - C(community) and C(isolated) Networks allow C(pvlan_host) and C(trunk_secondary).
+                  - C(community) Networks allow C(pvlan_host).
+                  - C(isolated) Networks allow C(pvlan_host) and C(trunk_secondary).
                 type: str
                 required: true
                 choices: [ access, dot1q_tunnel, trunk, promiscuous, trunk_promiscuous, pvlan_host, trunk_secondary ]
@@ -256,7 +257,8 @@ options:
             Campus VXLAN fabrics or Fabric groups containing Campus VXLAN members.
           - C(normal) Networks allow C(access), C(dot1q_tunnel), and C(trunk) attachment interface modes.
           - C(primary) Networks allow C(promiscuous) and C(trunk_promiscuous) attachment interface modes.
-          - C(community) and C(isolated) Networks allow C(pvlan_host) and C(trunk_secondary) attachment interface modes.
+          - C(community) Networks allow C(pvlan_host) attachment interface mode.
+          - C(isolated) Networks allow C(pvlan_host) and C(trunk_secondary) attachment interface modes.
         type: str
         choices: [ normal, primary, community, isolated ]
       primary_network_id:

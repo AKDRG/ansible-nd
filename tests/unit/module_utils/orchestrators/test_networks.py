@@ -2578,7 +2578,6 @@ def test_parent_l3_absent_or_child_fabric_data_converges_without_hiding_gateway_
         ("primary", "promiscuous"),
         ("primary", "trunk_promiscuous"),
         ("community", "pvlan_host"),
-        ("community", "trunk_secondary"),
         ("isolated", "pvlan_host"),
         ("isolated", "trunk_secondary"),
     ],
@@ -2616,6 +2615,34 @@ def test_pvlan_omitted_role_attachment_only_preserves_definition(state, strategy
         assert len(payloads) == (0 if repeat else 1)
         assert manager.planned_detach_payloads(state, parsed, current_attachments, desired) == []
         current_attachments = desired
+
+
+@pytest.mark.parametrize("state", ["merged", "replaced", "overridden", "staged"])
+@pytest.mark.parametrize("strategy_cls,network_type", [(StandaloneNetworkStrategy, "vxlanIbgp"), (MultisiteParentNetworkStrategy, "vxlan")])
+@pytest.mark.parametrize("check_mode", [False, True])
+@pytest.mark.parametrize("controller_version", ["4.2.1.10", "4.3.1.175"])
+@pytest.mark.parametrize("definition_update", [False, True])
+def test_community_secondary_trunk_with_inherited_role_is_rejected(state, strategy_cls, network_type, check_mode, controller_version, definition_update):
+    """Cached community roles reject trunk attachments before writes without extra queries."""
+    state = crud_module_args({"state": state})["state"]
+    entry = {
+        "network_name": "N",
+        "deploy": False,
+        "attach": [{"ip_address": "192.0.2.1", "interfaces": [{"mode": "trunk_secondary", "interface_range": "Ethernet1/61"}]}],
+    }
+    if definition_update:
+        entry["vlan_name"] = "NEW"
+    readback = {**_secondary_pvlan_readback("community"), "networkName": "N"}
+    coordinator, sm, parsed, orchestrator = _layer_validation_state_machine([entry], [readback], check_mode, strategy_cls, network_type, state)
+    orchestrator.rest_send.controller_version = controller_version
+    original_intent = deepcopy(parsed)
+    original_before = sm.before.get("N").to_payload()
+    with pytest.raises(ValueError, match="mode=trunk_secondary is not valid for vlan_network_type=privateSecondaryCommunity; allowed modes: pvlan_host"):
+        coordinator._resolve_proposed_networks(sm, parsed, state, orchestrator.strategy)
+    assert parsed == original_intent
+    assert sm.before.get("N").to_payload() == original_before
+    assert orchestrator.query_count == 1
+    assert orchestrator.written_payloads == []
 
 
 @pytest.mark.parametrize("state", ["merged", "replaced", "overridden", "staged"])
@@ -4337,7 +4364,7 @@ def test_attachment_interface_modes_remain_canonical_until_controller_payload():
         {
             "network_name": "PVLAN_SECONDARY",
             "layer": "layer2",
-            "vlan_network_type": "community",
+            "vlan_network_type": "isolated",
             "primary_network_id": 30000,
             "attach": [
                 {

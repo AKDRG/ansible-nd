@@ -56,7 +56,8 @@ _PRIVATE_PRIMARY_INTERFACE_MODES = frozenset(
         PublicNetworkAttachmentMode.TRUNK_PROMISCUOUS.value,
     }
 )
-_PRIVATE_SECONDARY_INTERFACE_MODES = frozenset(
+_PRIVATE_COMMUNITY_INTERFACE_MODES = frozenset({PublicNetworkAttachmentMode.PVLAN_HOST.value})
+_PRIVATE_ISOLATED_INTERFACE_MODES = frozenset(
     {
         PublicNetworkAttachmentMode.PVLAN_HOST.value,
         PublicNetworkAttachmentMode.TRUNK_SECONDARY.value,
@@ -685,8 +686,10 @@ class NetworkConfigModel(NDBaseModel):
             allowed_modes = _NORMAL_NETWORK_INTERFACE_MODES
         elif vlan_network_type == "privatePrimary":
             allowed_modes = _PRIVATE_PRIMARY_INTERFACE_MODES
+        elif vlan_network_type == "privateSecondaryCommunity":
+            allowed_modes = _PRIVATE_COMMUNITY_INTERFACE_MODES
         else:
-            allowed_modes = _PRIVATE_SECONDARY_INTERFACE_MODES
+            allowed_modes = _PRIVATE_ISOLATED_INTERFACE_MODES
 
         for attachment in self.attach or []:
             for interface in attachment.interfaces or []:

@@ -5,6 +5,7 @@
 
 """Render integration inputs and validate them without contacting a controller."""
 
+from copy import deepcopy
 from pathlib import Path
 
 import pytest
@@ -97,6 +98,9 @@ def _fixture_variables(role):
         nd_network_property_gather={"gathered": []},
         nd_vrf_property_gather={"gathered": []},
         nd_network_pvlan_members={"jsondata": {"fabrics": [{"name": "group-child", "type": "vxlanIbgp"}, {"name": "group-child-2", "type": "vxlanEbgp"}]}},
+        nd_network_pvlan_switch_inventory={"jsondata": {"switches": [{"switchId": "SW1", "fabricManagementIp": "192.0.2.10"}]}},
+        nd_network_pvlan_binding_query={"jsondata": {"attachments": []}},
+        nd_network_pvlan_expect_ports=True,
     )
     return variables
 
@@ -215,7 +219,7 @@ def test_opt_in_network_cases_consume_jinja_prepared_config(relative_path, case_
             for arguments in _module_arguments(task, "cisco.nd.nd_manage_networks", variables):
                 _validate_config("network", arguments["config"], parent=arguments["fabric_name"] == "group", state=arguments["state"])
                 validated += 1
-    assert len(prepared_names) == 3
+    assert len(prepared_names) == (5 if case_name is None else 3)
     assert validated >= 7
     if case_name == "Merged TC5 - Structured Attachment Options":
         attachment = variables["nd_network_standalone_merged_attachment_update_conf"][0]["attach"][0]
@@ -369,6 +373,146 @@ def test_pvlan_cleanup_keeps_secondary_before_primary_order_and_scope():
     removals = [task["cisco.nd.nd_manage_networks"] for task in lifecycle["always"] if task.get("cisco.nd.nd_manage_networks", {}).get("state") == "deleted"]
     assert [arguments["config"] for arguments in removals] == ["{{ nd_network_pvlan_secondary_conf }}", "{{ nd_network_pvlan_primary_conf }}"]
     assert all(arguments["fabric_name"] == "{{ target_fabric }}" for arguments in removals)
+
+
+def _pvlan_attachment_variables(topology, with_ports=True):
+    role = TARGETS / "nd_manage_networks"
+    variables = _fixture_variables(role)
+    if with_ports:
+        for field, modes, first in (
+            ("primary", ("promiscuous", "trunk_promiscuous"), 58),
+            ("community", ("pvlan_host",), 60),
+            ("isolated", ("pvlan_host", "trunk_secondary"), 62),
+        ):
+            variables[f"nd_network_pvlan_{field}_interfaces"] = [
+                {"mode": mode, "interface_range": f"Ethernet1/{first + offset}"} for offset, mode in enumerate(modes)
+            ]
+    for task in _test_case_tasks(role / "tests" / topology / "pvlan.yaml"):
+        if task["name"] == "PVLAN Attachments - Preview Attachment Creation":
+            return variables
+        facts = task.get("ansible.builtin.set_fact")
+        if facts:
+            variables.update(ansible_template.Templar(loader=DataLoader(), variables=variables).template(facts))
+        _prepare_config(role, "network", task, variables)
+    raise AssertionError("PVLAN attachment lifecycle was not imported")
+
+
+@pytest.mark.parametrize("topology", ["standalone", "msd"])
+@pytest.mark.parametrize("with_ports", [False, True])
+def test_pvlan_attachment_intent_preserves_roles_ports_and_sparse_omission(topology, with_ports):
+    """Both topologies use real Jinja/model validation without enabling deployment."""
+    variables = _pvlan_attachment_variables(topology, with_ports)
+    full = variables["nd_network_pvlan_attachment_conf"]
+    sparse = variables["nd_network_pvlan_attachment_sparse_conf"]
+    assert [entry["vlan_network_type"] for entry in full] == ["primary", "community", "isolated"]
+    assert sum(len(entry["attach"][0]["interfaces"]) for entry in full) == (5 if with_ports else 0)
+    for config in (full, sparse):
+        _validate_config("network", config, parent=topology == "msd")
+        assert all(entry["deploy"] is False and entry["attach"][0]["deploy"] is False for entry in config)
+        assert all(entry["attach"][0]["ip_address"] == "192.0.2.10" for entry in config)
+    assert all(set(entry) == {"network_name", "deploy", "attach"} for entry in sparse)
+    assert all(set(entry["attach"][0]) == {"ip_address", "deploy"} for entry in sparse)
+
+
+@pytest.mark.parametrize("topology", ["standalone", "msd"])
+def test_pvlan_attachment_fixture_rejects_community_trunk(topology):
+    """Reject a community-trunk boundary input instead of treating it as a positive case."""
+    variables = _pvlan_attachment_variables(topology)
+    config = deepcopy(variables["nd_network_pvlan_attachment_conf"])
+    config[1]["attach"][0]["interfaces"] = [{"mode": "trunk_secondary", "interface_range": "Ethernet1/61"}]
+    with pytest.raises(ValueError, match="mode=trunk_secondary is not valid for vlan_network_type=privateSecondaryCommunity"):
+        _validate_config("network", config, parent=topology == "msd")
+
+
+@pytest.mark.parametrize("enabled", [False, True])
+def test_pvlan_attachment_lifecycle_is_separately_opted_in(enabled):
+    lifecycle = next(task for task in _load_tasks(TARGETS / "nd_manage_networks/tasks/pvlan_tasks.yaml") if "always" in task)
+    task = next(task for task in lifecycle["block"] if task.get("ansible.builtin.import_tasks") == "pvlan_attachment_tasks.yaml")
+    variables = {"nd_network_run_pvlan_attach": enabled}
+    condition = Conditional(loader=DataLoader())
+    condition.when = [task["when"]]
+    assert condition.evaluate_conditional(ansible_template.Templar(loader=DataLoader(), variables=variables), variables) is enabled
+    names = [entry["name"] for entry in lifecycle["block"]]
+    assert names.index(task["name"]) < names.index("PVLAN - Read Controller Definitions in the Owning Fabric and Every Member")
+
+
+@pytest.mark.parametrize("succeeded", [False, True])
+def test_pvlan_port_repeats_and_readback_require_the_actual_port_write(succeeded):
+    """Failed port writes must not trigger dependent assertions in a continuous run."""
+    tasks = _load_tasks(TARGETS / "nd_manage_networks/tasks/pvlan_attachment_tasks.yaml")
+    names = {
+        "PVLAN Attachments - Read Native Bindings Before Repeats",
+        "PVLAN Attachments - Repeat Full Intent in Merged and Replaced Normal and Check Mode",
+        "PVLAN Attachments - Verify Bindings Survive All Repeats",
+    }
+    variables = {"nd_network_pvlan_port_attachment": {"failed": not succeeded}}
+    for task in tasks:
+        if task["name"] not in names:
+            continue
+        condition = Conditional(loader=DataLoader())
+        condition.when = [task["when"]]
+        assert condition.evaluate_conditional(ansible_template.Templar(loader=DataLoader(), variables=variables), variables) is succeeded
+
+
+@pytest.mark.parametrize("topology", ["standalone", "msd"])
+@pytest.mark.parametrize("expect_ports", [False, True])
+@pytest.mark.parametrize("wire_style", ["public", "camel", "legacy_host"])
+@pytest.mark.parametrize("invalid", [None, "switch", "fabric", "missing", "vlan", "count", "port", "mode", "native"])
+def test_pvlan_native_attachment_assertions_validate_saved_bindings(topology, expect_ports, wire_style, invalid):
+    """Readback checks must catch incorrect persistence, not merely successful writes."""
+    variables = _pvlan_attachment_variables(topology)
+    variables["nd_network_pvlan_expect_ports"] = expect_ports
+    bindings = []
+    for entry in variables["nd_network_pvlan_attachment_conf"]:
+        ports = []
+        for port in entry["attach"][0]["interfaces"] if expect_ports else []:
+            mode = port["mode"]
+            if wire_style != "public":
+                mode = {"trunk_promiscuous": "trunkPromiscuous", "trunk_secondary": "trunkSecondary", "pvlan_host": "pvlanHost"}.get(mode, mode)
+            if wire_style == "legacy_host" and mode == "pvlanHost":
+                mode = "host"
+            ports.append({"interfaceRange": port["interface_range"], "mode": mode, "nativeVlan": False})
+        bindings.append(
+            {
+                "attach": True,
+                "networkName": entry["network_name"],
+                "switchId": "SW1",
+                "switchFabricName": variables["nd_network_pvlan_switch_fabric"],
+                "vlanId": entry["vlan_id"],
+                "interfaces": ports,
+            }
+        )
+    if invalid == "switch":
+        bindings[0]["switchId"] = "OTHER"
+    elif invalid == "fabric":
+        bindings[0]["switchFabricName"] = "other-member"
+    elif invalid == "missing":
+        bindings.pop()
+    elif invalid == "vlan":
+        bindings[0]["vlanId"] = int(bindings[0]["vlanId"]) + 1
+    elif invalid == "count":
+        bindings[0]["interfaces"].append({"interfaceRange": "Ethernet1/1", "mode": "trunk"})
+    elif expect_ports and invalid in ("port", "mode", "native"):
+        key, value = {"port": ("interfaceRange", "Ethernet1/1"), "mode": ("mode", "trunk"), "native": ("nativeVlan", True)}[invalid]
+        bindings[0]["interfaces"][0][key] = value
+    variables["nd_network_pvlan_binding_query"] = {"jsondata": {"attachments": deepcopy(bindings)}}
+    passed = True
+    for task in _load_tasks(TARGETS / "nd_manage_networks/tasks/pvlan_attachment_readback_tasks.yaml"):
+        facts = task.get("ansible.builtin.set_fact")
+        if facts:
+            variables.update(ansible_template.Templar(loader=DataLoader(), variables=variables).template(facts))
+        if "ansible.builtin.assert" not in task:
+            continue
+        items = ansible_template.Templar(loader=DataLoader(), variables=variables).template(task["loop"]) if "loop" in task else [None]
+        for item in items:
+            context = {**variables, "item": item}
+            context.update(task.get("vars", {}))
+            if not _assertions_pass(task, context):
+                passed = False
+                break
+        if not passed:
+            break
+    assert passed is (invalid is None or (not expect_ports and invalid in ("port", "mode", "native")))
 
 
 def test_group_network_deploy_waits_before_idempotence_checks():
