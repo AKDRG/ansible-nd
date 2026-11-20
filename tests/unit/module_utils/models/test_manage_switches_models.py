@@ -13,6 +13,7 @@ import pytest
 from ansible_collections.cisco.nd.plugins.module_utils.common.pydantic_compat import ValidationError
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_switches.bootstrap_models import BootstrapImportSwitchModel
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_switches.config_models import SwitchConfigModel
+from ansible_collections.cisco.nd.plugins.module_utils.models.manage_switches.preprovision_models import PreProvisionSwitchModel
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_switches.rma_models import RMASwitchModel
 from ansible_collections.cisco.nd.plugins.module_utils.models.manage_switches.switch_data_models import SwitchDataModel
 
@@ -174,6 +175,43 @@ def test_bootstrap_import_model_requires_call_home_identity_fields():
 
     with pytest.raises(ValidationError, match="POAP1.*fingerPrint.*finish calling home"):
         BootstrapImportSwitchModel.model_validate(_bootstrap_import_payload(fingerPrint=" "))
+
+
+def test_bootstrap_and_preprovision_payloads_preserve_write_credential_selection():
+    """The 4.3 controller option is serialized for both onboarding actions."""
+    bootstrap_without_selection = BootstrapImportSwitchModel.model_validate(
+        _bootstrap_import_payload(
+            discoveryUsername="discover",
+            discoveryPassword="discovery-password",
+        )
+    )
+    assert "useCredentialForWrite" not in bootstrap_without_selection.to_payload()
+
+    bootstrap = BootstrapImportSwitchModel.model_validate(
+        _bootstrap_import_payload(
+            discoveryUsername="discover",
+            discoveryPassword="discovery-password",
+            useCredentialForWrite=True,
+        )
+    )
+    assert bootstrap.to_payload()["useCredentialForWrite"] is True
+
+    preprovision = PreProvisionSwitchModel.model_validate(
+        {
+            "serialNumber": "PREPROV1",
+            "hostname": "leaf-preprov",
+            "ip": "192.0.2.10",
+            "model": "N9K-C93180YC-EX",
+            "softwareVersion": "10.3(1)",
+            "gatewayIpMask": "192.0.2.1/24",
+            "password": "password",
+            "discoveryAuthProtocol": "md5",
+            "discoveryUsername": "discover",
+            "discoveryPassword": "discovery-password",
+            "useCredentialForWrite": False,
+        }
+    )
+    assert preprovision.to_payload()["useCredentialForWrite"] is False
 
 
 def test_rma_model_requires_call_home_identity_fields():

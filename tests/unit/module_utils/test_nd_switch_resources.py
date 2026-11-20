@@ -26,6 +26,7 @@ from ansible_collections.cisco.nd.plugins.module_utils.manage_switches.utils imp
     determine_operation_type,
     get_switch_field,
     group_switches_by_credentials,
+    group_switches_by_add_credentials,
     mask_password,
     query_bootstrap_switches,
 )
@@ -377,6 +378,29 @@ def test_request_with_retry_policy_applies_and_restores_settings_on_success_and_
     assert (failing.rest_send.timeout, failing.rest_send.send_interval) == (300, 5)
 
 
+def test_write_credential_selection_is_gated_for_special_operations_by_controller_release():
+    """POAP/pre-provision useCredentialForWrite is 4.3.1+, while normal add is cross-release."""
+    resource = _resource()
+    poap_cfg = _cfg(
+        poap={"serial_number": "POAP1", "hostname": "leaf-poap"},
+        use_credential_for_write=True,
+    )
+    resource.nd.rest_send.controller_version = "4.2.1.10"
+    with pytest.raises(FailJsonError, match="supported for POAP/pre-provision only on ND 4.3.1 or later"):
+        resource._validate_write_credential_capability([poap_cfg])
+
+    resource.nd.rest_send.controller_version = "4.3.1.175"
+    resource._validate_write_credential_capability([poap_cfg])
+
+    resource.nd.rest_send.controller_version = None
+    with pytest.raises(FailJsonError, match="controller version 'unknown'"):
+        resource._validate_write_credential_capability([poap_cfg])
+
+    normal_cfg = _cfg(use_credential_for_write=True)
+    resource.nd.rest_send.controller_version = "4.2.1.10"
+    resource._validate_write_credential_capability([normal_cfg])
+
+
 def test_switch_service_context_api_call_registers_successful_result():
     """api_call sends through the retry wrapper and records result metadata."""
     results = Results()
@@ -488,10 +512,12 @@ def test_validate_configs_accepts_dict_and_rejects_duplicates():
 
 def test_switch_argument_spec_exposes_supported_platform_type_choices():
     """Playbook argspec exposes platform_type while excluding unsupported enum values."""
-    platform_spec = SwitchConfigModel.get_argument_spec()["config"]["options"]["platform_type"]
+    config_options = SwitchConfigModel.get_argument_spec()["config"]["options"]
+    platform_spec = config_options["platform_type"]
 
     assert "default" not in platform_spec
     assert platform_spec["choices"] == ["nx-os", "ios-xe", "ios-xr", "other"]
+    assert config_options["use_credential_for_write"] == {"type": "bool"}
 
 
 def test_fabric_capability_validation_rejects_new_campus_leaf_before_writes():
@@ -912,7 +938,8 @@ def test_bulk_discover_success_and_not_reachable_failure():
 
 def test_switch_fabric_ops_bulk_add_delete_credentials_roles_and_finalize():
     """SwitchFabricOps records expected API calls for common fabric operations."""
-    ctx = _ctx(results=Results())
+    nd = FakeND()
+    ctx = _ctx(nd=nd, results=Results())
     fabric_ops = SwitchFabricOps(ctx, fabric_utils=SimpleNamespace(save_config=lambda: None, deploy_switches=lambda serials: None, deploy_config=lambda: None))
 
     fabric_ops.bulk_add(
@@ -934,10 +961,12 @@ def test_switch_fabric_ops_bulk_add_delete_credentials_roles_and_finalize():
             auth_proto="MD5",
             platform_type="nx-os",
             preserve_config=False,
+            use_credential_for_write=True,
         )
     )
     assert ctx.results.metadata[-1]["action"] == "create"
-    assert "switchRole" not in ctx.nd.calls[-1]["data"]["switches"][0]
+    assert "switchRole" not in nd.calls[-1]["data"]["switches"][0]
+    assert nd.calls[-1]["data"]["useCredentialForWrite"] is True
 
     deleted = fabric_ops.bulk_delete([_sw("192.0.2.10", "SERIAL1")])
     assert deleted == ["SERIAL1"]
@@ -1723,6 +1752,15 @@ def test_utils_switch_field_operation_type_and_credential_grouping():
 
     assert sorted(len(group) for group in groups.values()) == [1, 1, 2]
     assert sum(len(group) for group in groups.values()) == 4
+
+    split_cfg = _cfg("192.0.2.14", username="admin", password="same", preserve_config=False, use_credential_for_write=True)
+    discovery_groups = group_switches_by_credentials([cfgs[0], split_cfg], ListLogger())
+    assert sorted(len(group) for group in discovery_groups.values()) == [2]
+    split_groups = group_switches_by_add_credentials(
+        [cfgs[0], split_cfg],
+        ListLogger(),
+    )
+    assert sorted(len(group) for group in split_groups.values()) == [1, 1]
 
 
 def test_utils_bootstrap_query_index_and_poap_data_block():

@@ -80,6 +80,7 @@ from ansible_collections.cisco.nd.plugins.module_utils.manage_switches.utils imp
     mask_password,
     get_switch_field,
     group_switches_by_credentials,
+    group_switches_by_add_credentials,
     query_bootstrap_switches,
     build_bootstrap_index,
     build_poap_data_block,
@@ -115,6 +116,7 @@ from ansible_collections.cisco.nd.plugins.module_utils.endpoints.v1.manage.manag
 _DISCOVERY_MAX_HOPS: int = 0
 _REQUEST_RETRY_COUNT: int = 1
 _REQUEST_RETRY_DELAY: int = 1
+_SPECIAL_WRITE_CREDENTIAL_MIN_VERSION = (4, 3, 1)
 _REQUEST_ERRORS = (NDModuleError, TypeError, ValueError)
 _MODEL_ERRORS = (ValidationError, TypeError, ValueError)
 _OUTPUT_CONVERSION_ERRORS = (AttributeError, TypeError, ValueError)
@@ -169,6 +171,7 @@ class BulkAddSpec:
     auth_proto: SnmpV3AuthProtocol
     platform_type: PlatformType
     preserve_config: bool
+    use_credential_for_write: bool | None = None
 
 
 @dataclass
@@ -1195,6 +1198,7 @@ class SwitchFabricOps:
             snmpV3AuthProtocol=spec.auth_proto,
             username=spec.username,
             password=spec.password,
+            useCredentialForWrite=spec.use_credential_for_write,
         )
 
         payload = add_request.to_payload()
@@ -1945,6 +1949,7 @@ class POAPHandler:
             discoveryAuthProtocol=auth_proto,
             discoveryUsername=discovery_username,
             discoveryPassword=discovery_password,
+            useCredentialForWrite=switch_cfg.use_credential_for_write,
             data=data_block,
             fingerprint=fingerprint,
             publicKey=public_key,
@@ -2051,6 +2056,7 @@ class POAPHandler:
             discoveryAuthProtocol=auth_proto,
             discoveryUsername=discovery_username,
             discoveryPassword=discovery_password,
+            useCredentialForWrite=switch_cfg.use_credential_for_write,
             data=data_block,
             imagePolicy=image_policy or None,
             switchRole=switch_role,
@@ -2898,6 +2904,43 @@ class NDSwitchResourceModule:
             self.nd.module.fail_json(msg=msg)
 
     @staticmethod
+    def _parse_controller_version(version: Any) -> tuple[int, int, int] | None:
+        """Return the release tuple from an ND build version."""
+        if not version:
+            return None
+        parts = str(version).split(".")
+        try:
+            if len(parts) < 3:
+                return None
+            return int(parts[0]), int(parts[1]), int(parts[2])
+        except (IndexError, TypeError, ValueError):
+            return None
+
+    def _validate_write_credential_capability(self, configs: list["SwitchConfigModel"]) -> None:
+        """Reject unsupported POAP/pre-provision write-credential requests before writes."""
+        special_configs = [
+            cfg
+            for cfg in configs
+            if cfg.operation_type in ("poap", "preprovision", "swap") and cfg.use_credential_for_write is not None
+        ]
+        if not special_configs:
+            return
+
+        version = self._parse_controller_version(self.nd.rest_send.controller_version)
+        if version is not None and version >= _SPECIAL_WRITE_CREDENTIAL_MIN_VERSION:
+            return
+
+        operations = ", ".join(f"{cfg.operation_type} ({cfg.seed_ip})" for cfg in special_configs)
+        detected = self.nd.rest_send.controller_version or "unknown"
+        self.nd.module.fail_json(
+            msg=(
+                "use_credential_for_write is supported for POAP/pre-provision only on ND 4.3.1 or later; "
+                f"controller version '{detected}' cannot accept it for: {operations}. "
+                "Omit the option on ND 4.2."
+            )
+        )
+
+    @staticmethod
     def _capability_validation_configs(plan: "SwitchPlan") -> list["SwitchConfigModel"]:
         """
         # Summary
@@ -3169,6 +3212,7 @@ class NDSwitchResourceModule:
 
         # --- Validate & classify ------------------------------------------------
         proposed_config = SwitchDiffEngine.validate_configs(self.config, self.state, self.nd, self.log)
+        self._validate_write_credential_capability(proposed_config)
 
         # Enforce state constraints
         rma_configs = [c for c in proposed_config if c.operation_type == "rma"]
@@ -3331,9 +3375,9 @@ class NDSwitchResourceModule:
         have_migration = bool(spec.plan.migration_mode)
 
         if spec.add_configs and spec.discovered_data:
-            credential_groups = group_switches_by_credentials(spec.add_configs, self.log)
+            credential_groups = group_switches_by_add_credentials(spec.add_configs, self.log)
             for group_key, group_switches in credential_groups.items():
-                username, _pw_hash, auth_proto, platform_type, preserve_config = group_key
+                username, _pw_hash, auth_proto, platform_type, preserve_config, use_credential_for_write = group_key
                 password = group_switches[0].password
                 pairs = [(cfg, spec.discovered_data[cfg.seed_ip]) for cfg in group_switches if cfg.seed_ip in spec.discovered_data]
                 if not pairs:
@@ -3350,6 +3394,7 @@ class NDSwitchResourceModule:
                         auth_proto=auth_proto,
                         platform_type=platform_type,
                         preserve_config=preserve_config,
+                        use_credential_for_write=use_credential_for_write,
                     )
                 )
                 for cfg, disc in pairs:

@@ -99,6 +99,13 @@ options:
                 description:
                 - Login password for the switch.
                 type: str
+            use_credential_for_write:
+                description:
+                - Use the supplied discovery credential for LAN access and configuration deployment.
+                - Supported for normal switch adds on ND 4.2 and later.
+                - Supported for POAP and pre-provision on ND 4.3.1 and later.
+                - Omit this option on ND 4.2 for POAP or pre-provision.
+                type: bool
             role:
                 description:
                 - Role to assign to the switch in the fabric.
@@ -322,6 +329,7 @@ EXAMPLES = """
         password: "{{ switch_password }}"
         role: leaf
         preserve_config: false
+        use_credential_for_write: true
     state: merged
 
 - name: Add multiple switches
@@ -348,6 +356,7 @@ EXAMPLES = """
         username: admin
         password: "{{ switch_password }}"
         role: spine
+        use_credential_for_write: true
         preprovision:
           serial_number: SAL1234ABCD
           model: N9K-C93180YC-EX

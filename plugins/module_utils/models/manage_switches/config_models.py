@@ -284,6 +284,7 @@ class SwitchConfigModel(NDBaseModel):
     exclude_from_diff: ClassVar[list[str]] = [
         "username",
         "password",
+        "use_credential_for_write",
         "auth_proto",
         "preserve_config",
         "platform_type",
@@ -309,6 +310,14 @@ class SwitchConfigModel(NDBaseModel):
     password: str | None = Field(
         default=None,
         description="Login password to the switch (required for merged/overridden states)",
+    )
+    use_credential_for_write: bool | None = Field(
+        default=None,
+        alias="useCredentialForWrite",
+        description=(
+            "Use the supplied discovery credential for LAN access and configuration deployment. "
+            "Supported for normal switch adds on ND 4.2+ and for POAP/pre-provision on ND 4.3.1+."
+        ),
     )
     # Optional fields with defaults
     auth_proto: SnmpV3AuthProtocol = Field(
@@ -444,6 +453,8 @@ class SwitchConfigModel(NDBaseModel):
         """
         if self.rma and (self.poap or self.preprovision):
             raise ValueError("Cannot specify 'rma' together with 'poap' or 'preprovision' for the same switch")
+        if self.rma and self.use_credential_for_write is not None:
+            raise ValueError("'use_credential_for_write' is not supported for RMA operations")
         return self
 
     @model_validator(mode="after")
@@ -727,6 +738,7 @@ class SwitchConfigModel(NDBaseModel):
                     seed_ip=dict(type="str", required=True),
                     username=dict(type="str"),
                     password=dict(type="str", no_log=True),
+                    use_credential_for_write=dict(type="bool"),
                     auth_proto=dict(
                         type="str",
                         default="MD5",

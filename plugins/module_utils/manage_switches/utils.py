@@ -519,6 +519,20 @@ def group_switches_by_credentials(
     return groups
 
 
+def group_switches_by_add_credentials(
+    switches,
+    log: logging.Logger,
+) -> dict[tuple, list]:
+    """Split bulk-add groups only when their add payloads differ."""
+    groups: dict[tuple, list] = {}
+    for base_key, grouped_switches in group_switches_by_credentials(switches, log).items():
+        for switch in grouped_switches:
+            groups.setdefault(base_key + (switch.use_credential_for_write,), []).append(switch)
+
+    log.info("Grouped %s switches into %s bulk-add group(s)", len(switches), len(groups))
+    return groups
+
+
 # =========================================================================
 # Bootstrap Utilities
 # =========================================================================

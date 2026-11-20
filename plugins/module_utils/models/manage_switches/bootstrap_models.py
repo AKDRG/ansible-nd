@@ -213,6 +213,11 @@ class BootstrapImportSwitchModel(NDBaseModel):
     discovery_auth_protocol: SnmpV3AuthProtocol = Field(alias="discoveryAuthProtocol")
     discovery_username: str | None = Field(default=None, alias="discoveryUsername")
     discovery_password: str | None = Field(default=None, alias="discoveryPassword")
+    use_credential_for_write: bool | None = Field(
+        default=None,
+        alias="useCredentialForWrite",
+        description="Use the discovery credential for LAN access and configuration deployment",
+    )
     remote_credential_store: RemoteCredentialStore = Field(
         default=RemoteCredentialStore.LOCAL,
         alias="remoteCredentialStore",
