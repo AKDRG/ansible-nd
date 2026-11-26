@@ -1177,7 +1177,9 @@ def test_l3out_01200():
     assert spec["fabric_name"]["required"] is True
     assert "state" in spec
     assert spec["state"]["default"] == "merged"
-    assert set(spec["state"]["choices"]) == {"merged", "replaced", "deleted"}
+    assert set(spec["state"]["choices"]) == {
+        "merged", "replaced", "deleted", "gathered"
+    }
     assert "config" in spec
     assert spec["config"]["type"] == "list"
     assert spec["config"]["elements"] == "dict"

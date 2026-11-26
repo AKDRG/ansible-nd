@@ -45,7 +45,7 @@ options:
     - Use O(state=deleted) to delete the L3Outs specified in O(config).
       The O(config) list is required and each item must include at least O(config.name).
     type: str
-    choices: [ merged, replaced, deleted ]
+    choices: [ merged, replaced, deleted, gathered ]
     default: merged
   config:
     description:
@@ -901,6 +901,29 @@ def _validate_config_for_state(module: AnsibleModule) -> None:
             )
 
 
+def _attachment_requests(nd_state_machine: NDStateMachine) -> list:
+    """Return only attachment transitions not already satisfied/proven."""
+    observed = {
+        item.name: item.attach
+        for item in nd_state_machine.before
+        if item.attach is not None
+    }
+    observed.update(
+        getattr(nd_state_machine.model_orchestrator, "attachment_effects", {})
+    )
+
+    requests = []
+    for item in nd_state_machine.proposed:
+        if item.attach is None:
+            continue
+        # A newly created L3Out is detached by default.  This makes an
+        # explicit attach=false idempotent without posting a redundant action.
+        current = observed.get(item.name, False)
+        if current != item.attach:
+            requests.append({"name": item.name, "attach": item.attach})
+    return requests
+
+
 def _handle_attachments(nd_state_machine: NDStateMachine, check_mode: bool) -> dict:
     """
     Process attach/detach operations for L3Outs that have the attach field set.
@@ -910,39 +933,30 @@ def _handle_attachments(nd_state_machine: NDStateMachine, check_mode: bool) -> d
     model diff, so this function explicitly tracks and reports changes.
 
     Returns:
-        A dict with 'attachment_changed' (bool) and 'attachment_failures' (list).
-    """
-    result = {"attachment_changed": False, "attachment_failures": []}
+        A dict with attachment change status and successful action evidence.
 
-    attachments = []
-    for item in nd_state_machine.proposed:
-        if item.attach is not None:
-            attachments.append({"name": item.name, "attach": item.attach})
+    Raises:
+        Any controller or per-item failure.  Attachment convergence is part of
+        the module contract and must never be downgraded to a warning.
+    """
+    result = {"attachment_changed": False, "attachment_results": []}
+    attachments = _attachment_requests(nd_state_machine)
 
     if not attachments:
         return result
 
     if check_mode:
         result["attachment_changed"] = True
+        result["attachment_results"] = attachments
         return result
 
-    try:
-        api_result = nd_state_machine.model_orchestrator.attach_l3outs(attachments)
-
-        # Check for per-item failures in 207 response
-        if api_result and isinstance(api_result, dict):
-            items = api_result.get("results", [])
-            for item in items:
-                if isinstance(item, dict):
-                    status = item.get("status", "")
-                    if status == "failed":
-                        name = item.get("name", "unknown")
-                        message = item.get("message", "No details")
-                        result["attachment_failures"].append(f"'{name}': {message}")
-
-        result["attachment_changed"] = True
-    except Exception as e:
-        result["attachment_failures"].append(str(e))
+    api_result = nd_state_machine.model_orchestrator.attach_l3outs(attachments)
+    result["attachment_changed"] = True
+    result["attachment_results"] = (
+        api_result.get("results", [])
+        if isinstance(api_result, dict)
+        else []
+    )
 
     return result
 
@@ -988,10 +1002,7 @@ def main():
         # Merge attachment state into output
         if attach_result["attachment_changed"]:
             output["changed"] = True
-        if attach_result["attachment_failures"]:
-            output.setdefault("warnings", [])
-            for failure in attach_result["attachment_failures"]:
-                output["warnings"].append(f"Attachment operation failed: {failure}")
+            output["attachment_results"] = attach_result["attachment_results"]
 
         module.exit_json(**output)
 

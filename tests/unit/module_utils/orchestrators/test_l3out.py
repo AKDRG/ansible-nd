@@ -1266,3 +1266,165 @@ def test_l3out_00990() -> None:
         result = instance.attach_l3outs([{"name": "L3Out1", "attach": True}], max_retries=1, retry_delay=0)
 
     assert result.get("results", [{}])[0].get("status") == "success"
+
+
+def _lifecycle_model(protocol="bgp", attach=True, address="10.0.0.1"):
+    routing = {"routing_protocol": protocol}
+    if protocol == "bgp":
+        routing["bgp"] = {"fabric1_details": {"local_asn": "65001"}}
+    else:
+        routing["static"] = {
+            "fabric1_static_routes": [{
+                "ip_version": "ipv4",
+                "ip_prefix": "0.0.0.0/0",
+                "next_hop": "10.0.0.2",
+                "switch_ids": ["SERIAL1"],
+            }]
+        }
+    return L3OutModel(
+        name="l3out-lifecycle",
+        attach=attach,
+        fabric1_name="fabric-1",
+        fabric2_name="fabric-2",
+        vrf1_name="BLUE",
+        vrf2_name="RED",
+        configured_fabrics="both",
+        ip_version="ipv4",
+        connectivity_details={
+            "routing_interface_type": "routed",
+            "links": [{
+                "ipv4_mask_length": 30,
+                "switch1_details": {
+                    "switch_id": "SERIAL1",
+                    "interface_name": "Ethernet1/1",
+                    "interface_ipv4_address": address,
+                },
+                "switch2_details": {
+                    "switch_id": "SERIAL2",
+                    "interface_name": "Ethernet1/1",
+                    "interface_ipv4_address": "10.0.0.2",
+                },
+            }],
+        },
+        routing_details=routing,
+    )
+
+
+def test_l3out_connectivity_update_detaches_and_restores(monkeypatch) -> None:
+    """Attached connectivity changes are bounded by detach/reattach."""
+    instance = L3OutOrchestrator(
+        rest_send=_build_rest_send(ResponseGenerator(iter([{}])))
+    )
+    calls = []
+    monkeypatch.setattr(
+        L3OutOrchestrator,
+        "attach_l3outs",
+        lambda self, payload: calls.append(("attach", payload)) or {},
+    )
+    monkeypatch.setattr(
+        L3OutOrchestrator,
+        "_request",
+        lambda self, **kwargs: calls.append(("put", kwargs["data"])) or {},
+    )
+
+    instance.update(
+        _lifecycle_model(address="10.0.0.5"),
+        previous_model=_lifecycle_model(),
+    )
+
+    assert calls[0] == (
+        "attach", [{"name": "l3out-lifecycle", "attach": False}]
+    )
+    assert calls[1][0] == "put"
+    assert calls[2] == (
+        "attach", [{"name": "l3out-lifecycle", "attach": True}]
+    )
+    assert instance.attachment_effects == {"l3out-lifecycle": True}
+
+
+def test_l3out_same_protocol_routing_update_stays_attached(monkeypatch) -> None:
+    """A same-protocol routing-only PUT does not flap attachment."""
+    previous = _lifecycle_model()
+    proposed = _lifecycle_model()
+    proposed.routing_details.bgp.fabric1_details.local_asn = "65009"
+    instance = L3OutOrchestrator(
+        rest_send=_build_rest_send(ResponseGenerator(iter([{}])))
+    )
+    calls = []
+    monkeypatch.setattr(
+        L3OutOrchestrator,
+        "attach_l3outs",
+        lambda self, payload: calls.append(("attach", payload)) or {},
+    )
+    monkeypatch.setattr(
+        L3OutOrchestrator,
+        "_request",
+        lambda self, **kwargs: calls.append(("put", kwargs["data"])) or {},
+    )
+
+    instance.update(proposed, previous_model=previous)
+
+    assert [kind for kind, _payload in calls] == ["put"]
+
+
+def test_l3out_protocol_change_uses_delete_create(monkeypatch) -> None:
+    """ND-incompatible BGP/static PUTs use a detached replacement flow."""
+    instance = L3OutOrchestrator(
+        rest_send=_build_rest_send(ResponseGenerator(iter([{}])))
+    )
+    calls = []
+    monkeypatch.setattr(
+        L3OutOrchestrator,
+        "attach_l3outs",
+        lambda self, payload: calls.append(("attach", payload)) or {},
+    )
+    monkeypatch.setattr(
+        L3OutOrchestrator,
+        "delete",
+        lambda self, model: calls.append(("delete", model.name)) or {},
+    )
+    monkeypatch.setattr(
+        L3OutOrchestrator,
+        "create",
+        lambda self, model: calls.append(("create", model.name)) or {},
+    )
+
+    instance.update(
+        _lifecycle_model(protocol="static"),
+        previous_model=_lifecycle_model(protocol="bgp"),
+    )
+
+    assert calls == [
+        ("attach", [{"name": "l3out-lifecycle", "attach": False}]),
+        ("delete", "l3out-lifecycle"),
+        ("create", "l3out-lifecycle"),
+        ("attach", [{"name": "l3out-lifecycle", "attach": True}]),
+    ]
+
+
+def test_l3out_bulk_delete_detaches_attached_items_first(monkeypatch) -> None:
+    """Deletion never asks ND to remove a still-attached L3Out."""
+    instance = L3OutOrchestrator(
+        rest_send=_build_rest_send(ResponseGenerator(iter([{}])))
+    )
+    attached = _lifecycle_model()
+    detached = _lifecycle_model(attach=False)
+    detached.name = "already-detached"
+    calls = []
+    monkeypatch.setattr(
+        L3OutOrchestrator,
+        "attach_l3outs",
+        lambda self, payload: calls.append(("attach", payload)) or {},
+    )
+    monkeypatch.setattr(
+        L3OutOrchestrator,
+        "_request",
+        lambda self, **kwargs: calls.append(("delete", kwargs["data"])) or {},
+    )
+
+    instance.delete_bulk([attached, detached])
+
+    assert calls == [
+        ("attach", [{"name": "l3out-lifecycle", "attach": False}]),
+        ("delete", {"l3OutNames": ["l3out-lifecycle", "already-detached"]}),
+    ]

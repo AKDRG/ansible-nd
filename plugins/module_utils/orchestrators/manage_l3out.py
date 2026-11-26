@@ -81,10 +81,20 @@ class L3OutOrchestrator(NDBaseOrchestrator[L3OutModel]):
 
     # Private: fabric context cache for switch_id resolution
     _fabric_contexts: Dict[str, FabricContext] = None
+    _attachment_effects: Dict[str, bool] = None
 
     def model_post_init(self, __context) -> None:
         """Initialize mutable private attributes after model construction."""
         self._fabric_contexts: Dict[str, FabricContext] = {}
+        # Last attachment state proven by a successful attachment action in
+        # this invocation.  The module consumes this evidence when deciding
+        # whether its post-state attachment pass still has work to do.
+        self._attachment_effects = {}
+
+    @property
+    def attachment_effects(self) -> Dict[str, bool]:
+        """Successful attachment transitions proven in this invocation."""
+        return dict(self._attachment_effects)
 
     @property
     def fabric_name(self) -> str:
@@ -245,25 +255,104 @@ class L3OutOrchestrator(NDBaseOrchestrator[L3OutModel]):
         Update an existing L3Out.
 
         Resolves any management IP addresses in switch_id fields before sending.
+        An attached L3Out is detached around connectivity-affecting updates.
+        Routing-protocol changes are implemented as delete/create because the
+        ND API rejects a PUT that changes BGP to static or static to BGP.
         """
         try:
             self._resolve_links(model_instance)
-            api_endpoint = self.update_endpoint()
-            api_endpoint.set_identifiers(model_instance.get_identifier_value())
-            return self._request(
-                path=api_endpoint.path,
-                verb=api_endpoint.verb,
-                data=model_instance.to_payload(),
-                operation_type=OperationType.UPDATE,
+            previous_model = kwargs.get("previous_model")
+            was_attached = bool(previous_model and previous_model.attach is True)
+            desired_attach = model_instance.attach
+            old_protocol = self._routing_protocol(previous_model)
+            new_protocol = self._routing_protocol(model_instance)
+            protocol_replacement = bool(
+                previous_model
+                and old_protocol
+                and new_protocol
+                and old_protocol != new_protocol
             )
+            detach_for_update = bool(
+                was_attached
+                and (
+                    protocol_replacement
+                    or self._connectivity_identity_changed(
+                        previous_model, model_instance
+                    )
+                )
+            )
+
+            if detach_for_update:
+                self._set_attachment(model_instance.name, False)
+
+            if protocol_replacement:
+                # Use the existing object for delete so the operation retains
+                # its observed identity and context, then create the complete
+                # replacement payload under the same name.
+                self.delete(previous_model)
+                result = self.create(model_instance)
+            else:
+                api_endpoint = self.update_endpoint()
+                api_endpoint.set_identifiers(model_instance.get_identifier_value())
+                result = self._request(
+                    path=api_endpoint.path,
+                    verb=api_endpoint.verb,
+                    data=model_instance.to_payload(),
+                    operation_type=OperationType.UPDATE,
+                )
+
+            # Preserve the observed attachment state when the caller omitted
+            # attach.  An explicit false deliberately leaves the object
+            # detached; an explicit true restores/establishes attachment.
+            if detach_for_update and (
+                desired_attach is True
+                or (desired_attach is None and was_attached)
+            ):
+                self._set_attachment(model_instance.name, True)
+
+            return result
         except Exception as e:
             raise RuntimeError(f"Update failed for {model_instance.get_identifier_value()}: {e}") from e
+
+    @staticmethod
+    def _routing_protocol(model_instance: Optional[L3OutModel]) -> Optional[str]:
+        """Return a model's routing protocol when it is present."""
+        details = getattr(model_instance, "routing_details", None)
+        return getattr(details, "routing_protocol", None)
+
+    @staticmethod
+    def _connectivity_identity_changed(
+        previous_model: L3OutModel,
+        model_instance: L3OutModel,
+    ) -> bool:
+        """Whether an update changes fields that require detach/reattach.
+
+        Same-protocol routing-policy and route changes can use PUT in place.
+        Fabric/VRF scope, IP family, and link/interface changes cannot safely
+        be rewritten while the L3Out remains attached.
+        """
+        previous = previous_model.to_diff_dict()
+        proposed = model_instance.to_diff_dict()
+        previous.pop("routingDetails", None)
+        proposed.pop("routingDetails", None)
+        return previous != proposed
+
+    def _set_attachment(self, name: str, attach: bool) -> Dict:
+        """Apply and record one proven attachment transition."""
+        result = self.attach_l3outs([{"name": name, "attach": attach}])
+        self._attachment_effects[name] = attach
+        return result
 
     def delete(self, model_instance: L3OutModel, **kwargs) -> ResponseType:
         """
         Delete an L3Out.
         """
         try:
+            if (
+                model_instance.attach is True
+                and self._attachment_effects.get(model_instance.name) is not False
+            ):
+                self._set_attachment(model_instance.name, False)
             api_endpoint = self.delete_endpoint()
             api_endpoint.set_identifiers(model_instance.get_identifier_value())
             return self._request(
@@ -281,6 +370,17 @@ class L3OutOrchestrator(NDBaseOrchestrator[L3OutModel]):
         Uses POST /l3OutActions/remove with {"l3OutNames": [...]}.
         """
         try:
+            attached = [
+                {"name": model.name, "attach": False}
+                for model in model_instances
+                if model.attach is True
+                and self._attachment_effects.get(model.name) is not False
+            ]
+            if attached:
+                self.attach_l3outs(attached)
+                self._attachment_effects.update(
+                    {item["name"]: False for item in attached}
+                )
             api_endpoint = self.delete_bulk_endpoint()
             l3out_names = [m.get_identifier_value() for m in model_instances]
             request_body = {"l3OutNames": l3out_names}
